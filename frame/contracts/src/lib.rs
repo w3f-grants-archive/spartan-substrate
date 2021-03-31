@@ -106,7 +106,7 @@ mod tests;
 pub use crate::{pallet::*, schedule::Schedule};
 use crate::{
 	gas::GasMeter,
-	exec::{ExecutionContext, Executable},
+	exec::{Stack as ExecStack, Executable},
 	rent::Rent,
 	storage::{Storage, DeletedContract, ContractInfo, AliveContractInfo, TombstoneContractInfo},
 	weights::WeightInfo,
@@ -312,8 +312,9 @@ pub mod pallet {
 			let dest = T::Lookup::lookup(dest)?;
 			let mut gas_meter = GasMeter::new(gas_limit);
 			let schedule = <CurrentSchedule<T>>::get();
-			let mut ctx = ExecutionContext::<T, PrefabWasmModule<T>>::top_level(origin, &schedule);
-			let (result, code_len) = match ctx.call(dest, value, &mut gas_meter, data) {
+			let (result, code_len) = match ExecStack::<T, PrefabWasmModule<T>>::with_call(
+				origin, dest, &mut gas_meter, &schedule, value, data
+			) {
 				Ok((output, len)) => (Ok(output), len),
 				Err((err, len)) => (Err(err), len),
 			};
@@ -364,9 +365,9 @@ pub mod pallet {
 			let executable = PrefabWasmModule::from_code(code, &schedule)?;
 			let code_len = executable.code_len();
 			ensure!(code_len <= T::MaxCodeSize::get(), Error::<T>::CodeTooLarge);
-			let mut ctx = ExecutionContext::<T, PrefabWasmModule<T>>::top_level(origin, &schedule);
-			let result = ctx.instantiate(endowment, &mut gas_meter, executable, data, &salt)
-				.map(|(_address, output)| output);
+			let result = ExecStack::<T, PrefabWasmModule<T>>::with_instantiate(
+				origin, executable, &mut gas_meter, &schedule, endowment, data, &salt,
+			).map(|(_address, output)| output);
 			gas_meter.into_dispatch_result(
 				result,
 				T::WeightInfo::instantiate_with_code(code_len / 1024, salt.len() as u32 / 1024)
@@ -394,10 +395,10 @@ pub mod pallet {
 			let mut gas_meter = GasMeter::new(gas_limit);
 			let schedule = <CurrentSchedule<T>>::get();
 			let executable = PrefabWasmModule::from_storage(code_hash, &schedule, &mut gas_meter)?;
-			let mut ctx = ExecutionContext::<T, PrefabWasmModule<T>>::top_level(origin, &schedule);
 			let code_len = executable.code_len();
-			let result = ctx.instantiate(endowment, &mut gas_meter, executable, data, &salt)
-				.map(|(_address, output)| output);
+			let result = ExecStack::<T, PrefabWasmModule<T>>::with_instantiate(
+				origin, executable, &mut gas_meter, &schedule, endowment, data, &salt,
+			).map(|(_address, output)| output);
 			gas_meter.into_dispatch_result(
 				result,
 				T::WeightInfo::instantiate(code_len / 1024, salt.len() as u32 / 1024),
@@ -679,8 +680,9 @@ where
 	) -> ContractExecResult {
 		let mut gas_meter = GasMeter::new(gas_limit);
 		let schedule = <CurrentSchedule<T>>::get();
-		let mut ctx = ExecutionContext::<T, PrefabWasmModule<T>>::top_level(origin, &schedule);
-		let result = ctx.call(dest, value, &mut gas_meter, input_data);
+		let result = ExecStack::<T, PrefabWasmModule<T>>::with_call(
+			origin, dest, &mut gas_meter, &schedule, value, input_data,
+		);
 		let gas_consumed = gas_meter.gas_spent();
 		ContractExecResult {
 			exec_result: result.map(|r| r.0).map_err(|r| r.0),

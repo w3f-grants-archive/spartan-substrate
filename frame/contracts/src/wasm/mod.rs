@@ -35,7 +35,7 @@ use sp_core::crypto::UncheckedFrom;
 use codec::{Encode, Decode};
 use frame_support::dispatch::DispatchError;
 use pallet_contracts_primitives::ExecResult;
-pub use self::runtime::{ReturnCode, Runtime, RuntimeToken};
+pub use self::runtime::{ReturnCode, Runtime, RuntimeCosts};
 #[cfg(feature = "runtime-benchmarks")]
 pub use self::code_cache::reinstrument;
 #[cfg(test)]
@@ -173,10 +173,9 @@ where
 
 	fn execute<E: Ext<T = T>>(
 		self,
-		mut ext: E,
+		ext: &mut E,
 		function: &ExportedFunction,
 		input_data: Vec<u8>,
-		gas_meter: &mut GasMeter<E::T>,
 	) -> ExecResult {
 		let memory =
 			sp_sandbox::Memory::new(self.initial, Some(self.maximum))
@@ -197,10 +196,9 @@ where
 		});
 
 		let mut runtime = Runtime::new(
-			&mut ext,
+			ext,
 			input_data,
 			memory,
-			gas_meter,
 		);
 
 		// We store before executing so that the code hash is available in the constructor.

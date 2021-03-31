@@ -56,12 +56,7 @@ impl<T: Any + Debug + PartialEq + Eq> TestAuxiliaries for T {}
 /// for consistency). If inlined there should be no observable difference compared
 /// to a hand-written code.
 pub trait Token<T: Config>: Copy + Clone + TestAuxiliaries {
-	/// Metadata type, which the token can require for calculating the amount
-	/// of gas to charge. Can be a some configuration type or
-	/// just the `()`.
-	type Metadata;
-
-	/// Calculate amount of gas that should be taken by this token.
+	/// Return the amount of gas that should be taken by this token.
 	///
 	/// This function should be really lightweight and must not fail. It is not
 	/// expected that implementors will query the storage or do any kinds of heavy operations.
@@ -69,7 +64,7 @@ pub trait Token<T: Config>: Copy + Clone + TestAuxiliaries {
 	/// That said, implementors of this function still can run into overflows
 	/// while calculating the amount. In this case it is ok to use saturating operations
 	/// since on overflow they will return `max_value` which should consume all gas.
-	fn calculate_amount(&self, metadata: &Self::Metadata) -> Weight;
+	fn weight(&self) -> Weight;
 }
 
 /// A wrapper around a type-erased trait object of what used to be a `Token`.
@@ -102,6 +97,33 @@ where
 		}
 	}
 
+	/// Create a new gas meter by removing gas from the current meter.
+	///
+	/// # Note
+	///
+	/// Passing `0` as amount is interpreted as "all remaining gas".
+	pub fn nested(&mut self, amount: Weight) -> Result<Self, DispatchError> {
+		let amount = if amount == 0 {
+			self.gas_left
+		} else {
+			amount
+		};
+
+		// NOTE that it is ok to allocate all available gas since it still ensured
+		// by `charge` that it doesn't reach zero.
+		if self.gas_left < amount {
+			Err(<Error<T>>::OutOfGas.into())
+		} else {
+			self.gas_left = self.gas_left - amount;
+			Ok(GasMeter::new(amount))
+		}
+	}
+
+	/// Absorb the remaining gas of a nested meter after we are done using it.
+	pub fn absorb_nested(&mut self, nested: Self) {
+		self.gas_left += nested.gas_left;
+	}
+
 	/// Account for used gas.
 	///
 	/// Amount is calculated by the given `token`.
@@ -112,11 +134,7 @@ where
 	/// NOTE that amount is always consumed, i.e. if there is not enough gas
 	/// then the counter will be set to zero.
 	#[inline]
-	pub fn charge<Tok: Token<T>>(
-		&mut self,
-		metadata: &Tok::Metadata,
-		token: Tok,
-	) -> Result<ChargedAmount, DispatchError> {
+	pub fn charge<Tok: Token<T>>(&mut self, token: Tok) -> Result<ChargedAmount, DispatchError> {
 		#[cfg(test)]
 		{
 			// Unconditionally add the token to the storage.
@@ -127,7 +145,7 @@ where
 			self.tokens.push(erased_tok);
 		}
 
-		let amount = token.calculate_amount(metadata);
+		let amount = token.weight();
 		let new_value = match self.gas_left.checked_sub(amount) {
 			None => None,
 			Some(val) => Some(val),
@@ -146,13 +164,8 @@ where
 	///
 	/// This is when a maximum a priori amount was charged and then should be partially
 	/// refunded to match the actual amount.
-	pub fn adjust_gas<Tok: Token<T>>(
-		&mut self,
-		charged_amount: ChargedAmount,
-		metadata: &Tok::Metadata,
-		token: Tok,
-	) {
-		let adjustment = charged_amount.0.saturating_sub(token.calculate_amount(metadata));
+	pub fn adjust_gas<Tok: Token<T>>(&mut self, charged_amount: ChargedAmount, token: Tok) {
+		let adjustment = charged_amount.0.saturating_sub(token.weight());
 		self.gas_left = self.gas_left.saturating_add(adjustment).min(self.gas_limit);
 	}
 
@@ -163,34 +176,6 @@ where
 	/// the worst case did not happen.
 	pub fn refund(&mut self, amount: ChargedAmount) {
 		self.gas_left = self.gas_left.saturating_add(amount.0).min(self.gas_limit)
-	}
-
-	/// Allocate some amount of gas and perform some work with
-	/// a newly created nested gas meter.
-	///
-	/// Invokes `f` with either the gas meter that has `amount` gas left or
-	/// with `None`, if this gas meter has not enough gas to allocate given `amount`.
-	///
-	/// All unused gas in the nested gas meter is returned to this gas meter.
-	pub fn with_nested<R, F: FnOnce(Option<&mut GasMeter<T>>) -> R>(
-		&mut self,
-		amount: Weight,
-		f: F,
-	) -> R {
-		// NOTE that it is ok to allocate all available gas since it still ensured
-		// by `charge` that it doesn't reach zero.
-		if self.gas_left < amount {
-			f(None)
-		} else {
-			self.gas_left = self.gas_left - amount;
-			let mut nested = GasMeter::new(amount);
-
-			let r = f(Some(&mut nested));
-
-			self.gas_left = self.gas_left + nested.gas_left;
-
-			r
-		}
 	}
 
 	/// Returns how much gas was used.
