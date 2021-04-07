@@ -1374,8 +1374,9 @@ define_env!(Env, <E: Ext>,
 	// The data is encoded as T::Balance.
 	[seal0] seal_rent_allowance(ctx, out_ptr: u32, out_len_ptr: u32) => {
 		ctx.charge_gas(RuntimeCosts::RentAllowance)?;
+		let rent_allowance = ctx.ext.rent_allowance().encode();
 		Ok(ctx.write_sandbox_output(
-			out_ptr, out_len_ptr, &ctx.ext.rent_allowance().encode(), false, already_charged
+			out_ptr, out_len_ptr, &rent_allowance, false, already_charged
 		)?)
 	},
 

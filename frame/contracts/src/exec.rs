@@ -24,6 +24,7 @@ use sp_core::crypto::UncheckedFrom;
 use sp_std::{
 	prelude::*,
 	marker::PhantomData,
+	mem,
 };
 use sp_runtime::{Perbill, traits::{Convert, Saturating}};
 use frame_support::{
@@ -214,7 +215,7 @@ pub trait Ext: sealing::Sealed {
 	///
 	/// Returns `None` if the `key` wasn't previously set by `set_storage` or
 	/// was deleted.
-	fn get_storage(&self, key: &StorageKey) -> Option<Vec<u8>>;
+	fn get_storage(&mut self, key: &StorageKey) -> Option<Vec<u8>>;
 
 	/// Sets the storage entry by the given key to the specified value. If `value` is `None` then
 	/// the storage entry is deleted.
@@ -255,7 +256,7 @@ pub trait Ext: sealing::Sealed {
 	fn set_rent_allowance(&mut self, rent_allowance: BalanceOf<Self::T>);
 
 	/// Rent allowance of the contract
-	fn rent_allowance(&self) -> BalanceOf<Self::T>;
+	fn rent_allowance(&mut self) -> BalanceOf<Self::T>;
 
 	/// Returns the current block number.
 	fn block_number(&self) -> BlockNumberOf<Self::T>;
@@ -375,13 +376,76 @@ pub struct Stack<'a, T: Config, E> {
 	_phantom: PhantomData<E>,
 }
 
+enum CachedContract<T: Config> {
+	Cached(AliveContractInfo<T>),
+	Invalidated,
+	Terminated,
+}
+
+macro_rules! get_cached_or_panic {
+	($c:expr) => {{
+		if let CachedContract::Cached(contract) = $c {
+			contract
+		} else {
+			panic!(
+				"It is impossible to remove a contract that is on the call stack;\
+				See implementations of terminate and restore_to;\
+				Therefore fetching a contract will never fail while using an account id
+				that is currently active on the call stack;\
+				qed"
+			);
+		}
+	}}
+}
+
+impl<T: Config> CachedContract<T> {
+	fn load(&mut self, account_id: &T::AccountId) {
+		if let CachedContract::Invalidated = self {
+			let contract = <ContractInfoOf<T>>::get(&account_id)
+				.and_then(|contract| contract.get_alive());
+			if let Some(contract) = contract {
+				*self = CachedContract::Cached(contract);
+			}
+		}
+	}
+
+	fn as_alive(&mut self, account_id: &T::AccountId) -> &mut AliveContractInfo<T> {
+		self.load(account_id);
+		get_cached_or_panic!(self)
+	}
+
+	fn invalidate(&mut self, account_id: &T::AccountId) -> AliveContractInfo<T> {
+		self.load(account_id);
+		get_cached_or_panic!(mem::replace(self, Self::Invalidated))
+	}
+
+	fn terminate(&mut self, account_id: &T::AccountId) -> AliveContractInfo<T> {
+		self.load(account_id);
+		get_cached_or_panic!(mem::replace(self, Self::Terminated))
+	}
+}
+
 struct Frame<T: Config> {
 	account_id: T::AccountId,
-	contract_info: AliveContractInfo<T>,
+	contract_info: CachedContract<T>,
 	value_transferred: BalanceOf<T>,
 	rent_params: RentParams<T>,
 	entry_point: ExportedFunction,
 	nested_meter: GasMeter<T>,
+}
+
+impl<T: Config> Frame<T> {
+	fn contract_info(&mut self) -> &mut AliveContractInfo<T> {
+		self.contract_info.as_alive(&self.account_id)
+	}
+
+	fn invalidate(&mut self) -> AliveContractInfo<T> {
+		self.contract_info.invalidate(&self.account_id)
+	}
+
+	fn terminate(&mut self) -> AliveContractInfo<T> {
+		self.contract_info.terminate(&self.account_id)
+	}
 }
 
 enum FrameArgs<'a, T: Config, E> {
@@ -516,7 +580,7 @@ where
 		let frame = Frame {
 			rent_params: RentParams::new(&account_id, &contract_info, &executable),
 			value_transferred,
-			contract_info,
+			contract_info: CachedContract::Cached(contract_info),
 			account_id,
 			entry_point,
 			nested_meter: gas_meter.nested(gas_limit)
@@ -591,26 +655,28 @@ where
 		});
 
 		if output.is_ok() && entry_point == ExportedFunction::Constructor {
-			let frame = self.frame();
-			// We need to re-fetch the contract because changes are written to storage
-			// eagerly during execution.
-			let contract = <ContractInfoOf<T>>::get(&frame.account_id)
-				.and_then(|contract| contract.get_alive())
-				.ok_or((Error::<T>::NotCallable.into(), code_len))?;
+			let frame = self.frame_mut();
+			let account_id = frame.account_id.clone();
+
+			// It is not allowed to terminate a contract inside its constructor
+			if let CachedContract::Terminated = frame.contract_info {
+				return Err((Error::<T>::NotCallable.into(), code_len));
+			}
 
 			// Collect the rent for the first block to prevent the creation of very large
 			// contracts that never intended to pay for even one block.
 			// This also makes sure that it is above the subsistence threshold
 			// in order to keep up the guarantuee that we always leave a tombstone behind
 			// with the exception of a contract that called `seal_terminate`.
-			Rent::<T, E>::charge(&frame.account_id, contract, occupied_storage)
+			let contract = Rent::<T, E>::charge(&account_id, frame.invalidate(), occupied_storage)
 				.map_err(|e| (e.into(), code_len))?
 				.ok_or((Error::<T>::NewContractNotFunded.into(), code_len))?;
+			frame.contract_info = CachedContract::Cached(contract);
 
 			// Deposit an instantiation event.
 			deposit_event::<T>(vec![], Event::Instantiated(
 				self.caller().clone(),
-				frame.account_id.clone(),
+				account_id,
 			));
 		}
 
@@ -674,27 +740,46 @@ where
 	}
 
 	fn pop_frame(&mut self, persist: bool) {
-		let frame = self.frames.pop();
+		// Pop the current frame from the stack and return it in case it needs to interact
+		// with duplicates that might exist on the stack,.
+		let (account_id, contract) = {
+			let frame = self.frames.pop();
+			if !persist {
+				return;
+			}
+			if let Some(frame) = frame {
+				if let CachedContract::Cached(contract) = frame.contract_info {
+					(frame.account_id, contract)
+				} else {
+					return;
+				}
+			} else {
+				// Only the first frame exists: Just write it to storage and return
+				if let CachedContract::Cached(contract) = &self.first_frame.contract_info {
+					<ContractInfoOf<T>>::insert(
+						&self.first_frame.account_id,
+						ContractInfo::Alive(contract.clone())
+					);
+				}
+				return;
+			}
+		};
 
-		if !persist {
+		// optimization: Predecessor is the same contract.
+		let prev = self.frame_mut();
+		if prev.account_id == account_id {
+			prev.contract_info = CachedContract::Cached(contract);
 			return;
 		}
 
-		if let Some(frame) = frame {
-			if let Some(same) = self.frames_mut().find(|f| f.account_id == frame.account_id) {
-				same.contract_info = frame.contract_info;
-			} else {
-				<ContractInfoOf<T>>::insert(
-					&frame.account_id,
-					ContractInfo::Alive(frame.contract_info)
-				);
-			}
-		} else {
-			<ContractInfoOf<T>>::insert(
-				&self.first_frame.account_id,
-				ContractInfo::Alive(self.first_frame.contract_info.clone())
-			);
-		};
+		// Invalidate stale data: Only the first contract needs to be invalidated.
+		// Other duplicates are invalidated when their childs are popped from the stack.
+		if let Some(same) = self.frames_mut().skip(1).find(|f| f.account_id == account_id) {
+			same.contract_info = CachedContract::Invalidated;
+		}
+
+		// It is OK to store it here because active references to it are invalidated.
+		<ContractInfoOf<T>>::insert(&account_id, ContractInfo::Alive(contract));
 	}
 
 	fn frame(&self) -> &Frame<T> {
@@ -753,7 +838,15 @@ where
 		value: BalanceOf<T>,
 		input_data: Vec<u8>,
 	) -> Result<(ExecReturnValue, u32), (ExecError, u32)> {
-		let existing = self.frames().find(|f| f.account_id == to).map(|f| f.contract_info.clone());
+		let existing = self
+			.frames()
+			.filter(|f| f.entry_point == ExportedFunction::Call)
+			.find(|f| f.account_id == to).and_then(|f| {
+				match &f.contract_info {
+					CachedContract::Cached(contract) => Some(contract.clone()),
+					_ => None,
+				}
+			});
 		let executable = self.push_frame(FrameArgs::Call(to, existing), value, gas_limit)?;
 		self.run(executable, input_data)
 	}
@@ -783,24 +876,25 @@ where
 		&mut self,
 		beneficiary: &AccountIdOf<Self::T>,
 	) -> Result<u32, (DispatchError, u32)> {
-		let self_id = &self.frame().account_id;
-		let value = T::Currency::free_balance(self_id);
 		if self.is_recursive() {
 			return Err((Error::<T>::ReentranceDenied.into(), 0));
 		}
-		<Stack<'a, T, E>>::transfer(true, true, self_id, beneficiary, value).map_err(|e| (e, 0))?;
-		if let Some(ContractInfo::Alive(info)) = ContractInfoOf::<T>::take(self_id) {
-			Storage::<T>::queue_trie_for_deletion(&info).map_err(|e| (e, 0))?;
-			let code_len = E::remove_user(info.code_hash);
-			Contracts::<T>::deposit_event(Event::Terminated(self_id.clone(), beneficiary.clone()));
-			Ok(code_len)
-		} else {
-			panic!(
-				"this function is only invoked by in the context of a contract;\
-				this contract is therefore alive;\
-				qed"
-			);
-		}
+		let frame = self.frame_mut();
+		let info = frame.terminate();
+		Storage::<T>::queue_trie_for_deletion(&info).map_err(|e| (e, 0))?;
+		<Stack<'a, T, E>>::transfer(
+			true,
+			true,
+			&frame.account_id,
+			beneficiary,
+			T::Currency::free_balance(&frame.account_id),
+		).map_err(|e| (e, 0))?;
+		ContractInfoOf::<T>::remove(&frame.account_id);
+		let code_len = E::remove_user(info.code_hash);
+		Contracts::<T>::deposit_event(
+			Event::Terminated(frame.account_id.clone(), beneficiary.clone()),
+		);
+		Ok(code_len)
 	}
 
 	fn restore_to(
@@ -842,15 +936,15 @@ where
 		Self::transfer(true, false, &self.frame().account_id, to, value)
 	}
 
-	fn get_storage(&self, key: &StorageKey) -> Option<Vec<u8>> {
-		Storage::<T>::read(&self.frame().contract_info.trie_id, key)
+	fn get_storage(&mut self, key: &StorageKey) -> Option<Vec<u8>> {
+		Storage::<T>::read(&self.frame_mut().contract_info().trie_id, key)
 	}
 
 	fn set_storage(&mut self, key: StorageKey, value: Option<Vec<u8>>) -> DispatchResult {
 		let block_number = self.block_number;
 		let frame = self.frame_mut();
 		Storage::<T>::write(
-			block_number, &mut frame.contract_info, &key, value,
+			block_number, frame.contract_info(), &key, value,
 		)
 	}
 
@@ -894,11 +988,11 @@ where
 	}
 
 	fn set_rent_allowance(&mut self, rent_allowance: BalanceOf<T>) {
-		self.frame_mut().contract_info.rent_allowance = rent_allowance;
+		self.frame_mut().contract_info().rent_allowance = rent_allowance;
 	}
 
-	fn rent_allowance(&self) -> BalanceOf<T> {
-		self.frame().contract_info.rent_allowance
+	fn rent_allowance(&mut self) -> BalanceOf<T> {
+		self.frame_mut().contract_info().rent_allowance
 	}
 
 	fn block_number(&self) -> T::BlockNumber { self.block_number }
