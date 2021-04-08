@@ -1064,8 +1064,9 @@ mod tests {
 	use assert_matches::assert_matches;
 	use std::{cell::RefCell, collections::HashMap, rc::Rc};
 	use pretty_assertions::{assert_eq, assert_ne};
+	use pallet_contracts_primitives::ReturnFlags;
 
-	type MockContext<'a> = ExecutionContext<'a, Test, MockExecutable>;
+	type MockStack<'a> = Stack<'a, Test, MockExecutable>;
 
 	const GAS_LIMIT: Weight = 10_000_000_000;
 
@@ -1086,7 +1087,6 @@ mod tests {
 	struct MockCtx<'a> {
 		ext: &'a mut dyn Ext<T = Test>,
 		input_data: Vec<u8>,
-		gas_meter: &'a mut GasMeter<Test>,
 	}
 
 	#[derive(Clone)]
@@ -1106,8 +1106,8 @@ mod tests {
 	impl MockLoader {
 		fn insert(
 			func_type: ExportedFunction,
-			f: impl Fn(MockCtx, &MockExecutable,
-		) -> ExecResult + 'static) -> CodeHash<Test> {
+			f: impl Fn(MockCtx, &MockExecutable) -> ExecResult + 'static,
+		) -> CodeHash<Test> {
 			LOADER.with(|loader| {
 				let mut loader = loader.borrow_mut();
 				// Generate code hashes as monotonically increasing values.
@@ -1196,19 +1196,17 @@ mod tests {
 
 		fn execute<E: Ext<T = Test>>(
 			self,
-			mut ext: E,
+			ext: &mut E,
 			function: &ExportedFunction,
 			input_data: Vec<u8>,
-			gas_meter: &mut GasMeter<Test>,
 		) -> ExecResult {
 			if let &Constructor = function {
 				MockLoader::increment_refcount(self.code_hash);
 			}
 			if function == &self.func_type {
 				(self.func)(MockCtx {
-					ext: &mut ext,
+					ext,
 					input_data,
-					gas_meter,
 				}, &self)
 			} else {
 				exec_success()
@@ -1251,11 +1249,12 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			place_contract(&BOB, exec_ch);
 
 			assert_matches!(
-				ctx.call(BOB, value, &mut gas_meter, vec![]),
+				MockStack::with_call(
+					ALICE, BOB, &mut gas_meter, &schedule, value, vec![],
+				),
 				Ok(_)
 			);
 		});
@@ -1274,9 +1273,9 @@ mod tests {
 			set_balance(&origin, 100);
 			set_balance(&dest, 0);
 
-			super::transfer::<Test>(
-				super::TransferCause::Call,
-				super::TransactorKind::PlainAccount,
+			MockStack::transfer(
+				true,
+				false,
 				&origin,
 				&dest,
 				55,
@@ -1301,15 +1300,16 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(origin.clone(), &schedule);
 			place_contract(&BOB, return_ch);
 			set_balance(&origin, 100);
 			let balance = get_balance(&dest);
 
-			let output = ctx.call(
+			let output = MockStack::with_call(
+				origin.clone(),
 				dest.clone(),
-				55,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				55,
 				vec![],
 			).unwrap();
 
@@ -1331,9 +1331,9 @@ mod tests {
 		ExtBuilder::default().build().execute_with(|| {
 			set_balance(&origin, 0);
 
-			let result = super::transfer::<Test>(
-				super::TransferCause::Call,
-				super::TransactorKind::PlainAccount,
+			let result = MockStack::transfer(
+				false,
+				false,
 				&origin,
 				&dest,
 				100,
@@ -1361,13 +1361,14 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(origin, &schedule);
 			place_contract(&BOB, return_ch);
 
-			let result = ctx.call(
+			let result = MockStack::with_call(
+				origin,
 				dest,
-				0,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				0,
 				vec![],
 			);
 
@@ -1390,13 +1391,14 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(origin, &schedule);
-			place_contract(&BOB, return_ch);
+			place_contract(&dest, return_ch);
 
-			let result = ctx.call(
+			let result = MockStack::with_call(
+				origin,
 				dest,
-				0,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				0,
 				vec![],
 			);
 
@@ -1416,13 +1418,14 @@ mod tests {
 		// This one tests passing the input data into a contract via call.
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			place_contract(&BOB, input_data_ch);
 
-			let result = ctx.call(
+			let result = MockStack::with_call(
+				ALICE,
 				BOB,
-				0,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				0,
 				vec![1, 2, 3, 4],
 			);
 			assert_matches!(result, Ok(_));
@@ -1440,7 +1443,6 @@ mod tests {
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
 			let subsistence = Contracts::<Test>::subsistence_threshold();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable = MockExecutable::from_storage(
 				input_data_ch, &schedule, &mut gas_meter
@@ -1448,10 +1450,12 @@ mod tests {
 
 			set_balance(&ALICE, subsistence * 10);
 
-			let result = ctx.instantiate(
-				subsistence * 3,
-				&mut gas_meter,
+			let result = MockStack::with_instantiate(
+				ALICE,
 				executable,
+				&mut gas_meter,
+				&schedule,
+				subsistence * 3,
 				vec![1, 2, 3, 4],
 				&[],
 			);
@@ -1469,7 +1473,7 @@ mod tests {
 		let value = Default::default();
 		let recurse_ch = MockLoader::insert(Call, |ctx, _| {
 			// Try to call into yourself.
-			let r = ctx.ext.call(&BOB, 0, ctx.gas_meter, vec![]);
+			let r = ctx.ext.call(0, BOB, 0, vec![]);
 
 			REACHED_BOTTOM.with(|reached_bottom| {
 				let mut reached_bottom = reached_bottom.borrow_mut();
@@ -1492,14 +1496,15 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			set_balance(&BOB, 1);
 			place_contract(&BOB, recurse_ch);
 
-			let result = ctx.call(
+			let result = MockStack::with_call(
+				ALICE,
 				BOB,
-				value,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				value,
 				vec![],
 			);
 
@@ -1525,7 +1530,7 @@ mod tests {
 
 			// Call into CHARLIE contract.
 			assert_matches!(
-				ctx.ext.call(&CHARLIE, 0, ctx.gas_meter, vec![]),
+				ctx.ext.call(0, CHARLIE, 0, vec![]),
 				Ok(_)
 			);
 			exec_success()
@@ -1540,14 +1545,15 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(origin.clone(), &schedule);
 			place_contract(&dest, bob_ch);
 			place_contract(&CHARLIE, charlie_ch);
 
-			let result = ctx.call(
+			let result = MockStack::with_call(
+				origin.clone(),
 				dest.clone(),
-				0,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				0,
 				vec![],
 			);
 
@@ -1566,7 +1572,7 @@ mod tests {
 
 			// Call into charlie contract.
 			assert_matches!(
-				ctx.ext.call(&CHARLIE, 0, ctx.gas_meter, vec![]),
+				ctx.ext.call(0, CHARLIE, 0, vec![]),
 				Ok(_)
 			);
 			exec_success()
@@ -1578,14 +1584,15 @@ mod tests {
 
 		ExtBuilder::default().build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			place_contract(&BOB, bob_ch);
 			place_contract(&CHARLIE, charlie_ch);
 
-			let result = ctx.call(
+			let result = MockStack::with_call(
+				ALICE,
 				BOB,
-				0,
 				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&schedule,
+				0,
 				vec![],
 			);
 
@@ -1599,17 +1606,18 @@ mod tests {
 
 		ExtBuilder::default().existential_deposit(15).build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable = MockExecutable::from_storage(
 				dummy_ch, &schedule, &mut gas_meter
 			).unwrap();
 
 			assert_matches!(
-				ctx.instantiate(
-					0, // <- zero endowment
-					&mut gas_meter,
+				MockStack::with_instantiate(
+					ALICE,
 					executable,
+					&mut gas_meter,
+					&schedule,
+					0, // <- zero endowment
 					vec![],
 					&[],
 				),
@@ -1627,7 +1635,6 @@ mod tests {
 
 		ExtBuilder::default().existential_deposit(15).build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable = MockExecutable::from_storage(
 				dummy_ch, &schedule, &mut gas_meter
@@ -1635,10 +1642,12 @@ mod tests {
 			set_balance(&ALICE, 1000);
 
 			let instantiated_contract_address = assert_matches!(
-				ctx.instantiate(
-					100,
-					&mut gas_meter,
+				MockStack::with_instantiate(
+					ALICE,
 					executable,
+					&mut gas_meter,
+					&schedule,
+					100,
 					vec![],
 					&[],
 				),
@@ -1663,7 +1672,6 @@ mod tests {
 
 		ExtBuilder::default().existential_deposit(15).build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable = MockExecutable::from_storage(
 				dummy_ch, &schedule, &mut gas_meter
@@ -1671,10 +1679,12 @@ mod tests {
 			set_balance(&ALICE, 1000);
 
 			let instantiated_contract_address = assert_matches!(
-				ctx.instantiate(
-					100,
-					&mut gas_meter,
+				MockStack::with_instantiate(
+					ALICE,
 					executable,
+					&mut gas_meter,
+					&schedule,
+					100,
 					vec![],
 					&[],
 				),
@@ -1682,7 +1692,7 @@ mod tests {
 			);
 
 			// Check that the account has not been created.
-			assert!(Storage::<Test>::code_hash(&instantiated_contract_address).is_err());
+			assert!(Storage::<Test>::code_hash(&instantiated_contract_address).is_none());
 			assert!(events().is_empty());
 		});
 	}
@@ -1697,9 +1707,9 @@ mod tests {
 			move |ctx, _| {
 				// Instantiate a contract and save it's address in `instantiated_contract_address`.
 				let (address, output, _) = ctx.ext.instantiate(
+					0,
 					dummy_ch,
 					Contracts::<Test>::subsistence_threshold() * 3,
-					ctx.gas_meter,
 					vec![],
 					&[48, 49, 50],
 				).unwrap();
@@ -1711,12 +1721,13 @@ mod tests {
 
 		ExtBuilder::default().existential_deposit(15).build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			set_balance(&ALICE, Contracts::<Test>::subsistence_threshold() * 100);
 			place_contract(&BOB, instantiator_ch);
 
 			assert_matches!(
-				ctx.call(BOB, 20, &mut GasMeter::<Test>::new(GAS_LIMIT), vec![]),
+				MockStack::with_call(
+					ALICE, BOB, &mut GasMeter::<Test>::new(GAS_LIMIT), &schedule, 20, vec![],
+				),
 				Ok(_)
 			);
 
@@ -1742,9 +1753,9 @@ mod tests {
 				// Instantiate a contract and save it's address in `instantiated_contract_address`.
 				assert_matches!(
 					ctx.ext.instantiate(
+						0,
 						dummy_ch,
 						15u64,
-						ctx.gas_meter,
 						vec![],
 						&[],
 					),
@@ -1760,13 +1771,14 @@ mod tests {
 
 		ExtBuilder::default().existential_deposit(15).build().execute_with(|| {
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			set_balance(&ALICE, 1000);
 			set_balance(&BOB, 100);
 			place_contract(&BOB, instantiator_ch);
 
 			assert_matches!(
-				ctx.call(BOB, 20, &mut GasMeter::<Test>::new(GAS_LIMIT), vec![]),
+				MockStack::with_call(
+					ALICE, BOB, &mut GasMeter::<Test>::new(GAS_LIMIT), &schedule, 20, vec![],
+				),
 				Ok(_)
 			);
 
@@ -1788,7 +1800,6 @@ mod tests {
 			.build()
 			.execute_with(|| {
 				let schedule = <CurrentSchedule<Test>>::get();
-				let mut ctx = MockContext::top_level(ALICE, &schedule);
 				let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 				let executable = MockExecutable::from_storage(
 					terminate_ch, &schedule, &mut gas_meter
@@ -1796,10 +1807,12 @@ mod tests {
 				set_balance(&ALICE, 1000);
 
 				assert_eq!(
-					ctx.instantiate(
-						100,
-						&mut gas_meter,
+					MockStack::with_instantiate(
+						ALICE,
 						executable,
+						&mut gas_meter,
+						&schedule,
+						100,
 						vec![],
 						&[],
 					),
@@ -1827,17 +1840,18 @@ mod tests {
 		ExtBuilder::default().build().execute_with(|| {
 			let subsistence = Contracts::<Test>::subsistence_threshold();
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable = MockExecutable::from_storage(
 				rent_allowance_ch, &schedule, &mut gas_meter
 			).unwrap();
 			set_balance(&ALICE, subsistence * 10);
 
-			let result = ctx.instantiate(
-				subsistence * 5,
-				&mut gas_meter,
+			let result = MockStack::with_instantiate(
+				ALICE,
 				executable,
+				&mut gas_meter,
+				&schedule,
+				subsistence * 5,
 				vec![],
 				&[],
 			);
@@ -1859,14 +1873,15 @@ mod tests {
 		ExtBuilder::default().build().execute_with(|| {
 			let subsistence = Contracts::<Test>::subsistence_threshold();
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			set_balance(&ALICE, subsistence * 10);
 			place_contract(&BOB, code_hash);
-			ctx.call(
+			MockStack::with_call(
+				ALICE,
 				BOB,
-				0,
 				&mut gas_meter,
+				&schedule,
+				0,
 				vec![],
 			).unwrap();
 		});
@@ -1892,9 +1907,9 @@ mod tests {
 			// This is also not reflected in the rent params.
 			assert_eq!(MockLoader::refcount(&executable.code_hash), 1);
 			ctx.ext.instantiate(
+				0,
 				executable.code_hash,
 				subsistence * 25,
-				&mut GasMeter::<Test>::new(GAS_LIMIT),
 				vec![],
 				&[],
 			).unwrap();
@@ -1907,14 +1922,15 @@ mod tests {
 		ExtBuilder::default().build().execute_with(|| {
 			let subsistence = Contracts::<Test>::subsistence_threshold();
 			let schedule = <CurrentSchedule<Test>>::get();
-			let mut ctx = MockContext::top_level(ALICE, &schedule);
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			set_balance(&ALICE, subsistence * 100);
 			place_contract(&BOB, code_hash);
-			ctx.call(
+			MockStack::with_call(
+				ALICE,
 				BOB,
-				subsistence * 50,
 				&mut gas_meter,
+				&schedule,
+				subsistence * 50,
 				vec![],
 			).unwrap();
 		});

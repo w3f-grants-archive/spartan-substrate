@@ -361,11 +361,10 @@ where
 
 	/// Returns the code hash of the contract specified by `account` ID.
 	#[cfg(test)]
-	pub fn code_hash(account: &AccountIdOf<T>) -> Result<CodeHash<T>, ContractAbsentError>
+	pub fn code_hash(account: &AccountIdOf<T>) -> Option<CodeHash<T>>
 	{
 		<ContractInfoOf<T>>::get(account)
 			.and_then(|i| i.as_alive().map(|i| i.code_hash))
-			.ok_or(ContractAbsentError)
 	}
 
 	/// Fill up the queue in order to exercise the limits during testing.

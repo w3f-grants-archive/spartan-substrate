@@ -166,11 +166,11 @@ where
 
 	/// Store the supplied storage items into this contracts storage.
 	fn store(&self, items: &Vec<(StorageKey, Vec<u8>)>) -> Result<(), &'static str> {
-		let info = self.alive_info()?;
+		let mut info = self.alive_info()?;
 		for item in items {
 			Storage::<T>::write(
-				&self.account_id,
-				&info.trie_id,
+				<System<T>>::block_number(),
+				&mut info,
 				&item.0,
 				Some(item.1.clone()),
 			)
@@ -1148,11 +1148,11 @@ benchmarks! {
 			.. Default::default()
 		});
 		let instance = Contract::<T>::new(code, vec![], Endow::Max)?;
-		let trie_id = instance.alive_info()?.trie_id;
+		let mut info = instance.alive_info()?;
 		for key in keys {
 			Storage::<T>::write(
-				&instance.account_id,
-				&trie_id,
+				<System<T>>::block_number(),
+				&mut info,
 				key.as_slice().try_into().map_err(|e| "Key has wrong length")?,
 				Some(vec![42; T::MaxValueSize::get() as usize])
 			)
@@ -1193,11 +1193,11 @@ benchmarks! {
 			.. Default::default()
 		});
 		let instance = Contract::<T>::new(code, vec![], Endow::Max)?;
-		let trie_id = instance.alive_info()?.trie_id;
+		let mut info = instance.alive_info()?;
 		for key in keys {
 			Storage::<T>::write(
-				&instance.account_id,
-				&trie_id,
+				<System<T>>::block_number(),
+				&mut info,
 				key.as_slice().try_into().map_err(|e| "Key has wrong length")?,
 				Some(vec![])
 			)
@@ -1238,10 +1238,10 @@ benchmarks! {
 			.. Default::default()
 		});
 		let instance = Contract::<T>::new(code, vec![], Endow::Max)?;
-		let trie_id = instance.alive_info()?.trie_id;
+		let mut info = instance.alive_info()?;
 		Storage::<T>::write(
-			&instance.account_id,
-			&trie_id,
+			<System<T>>::block_number(),
+			&mut info,
 			key.as_slice().try_into().map_err(|e| "Key has wrong length")?,
 			Some(vec![42u8; (n * 1024) as usize])
 		)
