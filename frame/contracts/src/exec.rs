@@ -82,12 +82,13 @@ where
 {
 	fn new<E: Executable<T>>(
 		account_id: &T::AccountId,
+		value: &BalanceOf<T>,
 		contract: &AliveContractInfo<T>,
 		executable: &E
 	) -> Self {
 		Self {
-			total_balance: T::Currency::total_balance(account_id),
-			free_balance: T::Currency::free_balance(account_id),
+			total_balance: T::Currency::total_balance(account_id).saturating_add(*value),
+			free_balance: T::Currency::free_balance(account_id).saturating_add(*value),
 			subsistence_threshold: <Contracts<T>>::subsistence_threshold(),
 			deposit_per_contract: T::DepositPerContract::get(),
 			deposit_per_storage_byte: T::DepositPerStorageByte::get(),
@@ -578,7 +579,9 @@ where
 		};
 
 		let frame = Frame {
-			rent_params: RentParams::new(&account_id, &contract_info, &executable),
+			rent_params: RentParams::new(
+				&account_id, &value_transferred, &contract_info, &executable,
+			),
 			value_transferred,
 			contract_info: CachedContract::Cached(contract_info),
 			account_id,
@@ -615,72 +618,63 @@ where
 		executable: E,
 		input_data: Vec<u8>
 	) -> Result<(ExecReturnValue, u32), (ExecError, u32)> {
-		let output = self.raw_run(executable, input_data);
-		if !output.is_ok() && self.frame().entry_point == ExportedFunction::Constructor {
-			self.account_counter.as_mut().map(|c| *c = c.wrapping_sub(1));
-		}
-		self.pop_frame(output.is_ok());
-		output
-	}
-
-	fn raw_run(
-		&mut self,
-		executable: E,
-		input_data: Vec<u8>
-	) -> Result<(ExecReturnValue, u32), (ExecError, u32)> {
-		// Cache the value before calling into the constructor because that
-		// consumes the value. If the constructor creates additional contracts using
-		// the same code hash we still charge the "1 block rent" as if they weren't
-		// spawned. This is OK as overcharging is always safe.
-		let occupied_storage = executable.occupied_storage();
-		let code_len = executable.code_len();
 		let entry_point = self.frame().entry_point;
+		let do_transaction = || {
+			// Cache the value before calling into the constructor because that
+			// consumes the value. If the constructor creates additional contracts using
+			// the same code hash we still charge the "1 block rent" as if they weren't
+			// spawned. This is OK as overcharging is always safe.
+			let occupied_storage = executable.occupied_storage();
+			let code_len = executable.code_len();
 
-		let output = with_transaction(|| {
-			let output = self.initial_transfer().map_err(|e| (ExecError::from(e), 0));
-			if let Err(err) = output {
-				return TransactionOutcome::Rollback(Err(err))
-			}
-
+			self.initial_transfer().map_err(|e| (ExecError::from(e), 0))?;
 			let output = executable.execute(
 				self,
 				&entry_point,
 				input_data,
-			).map_err(|e| (ExecError { error: e.error, origin: ErrorOrigin::Callee }, code_len));
+			).map_err(|e| (ExecError { error: e.error, origin: ErrorOrigin::Callee }, code_len))?;
 
+			if output.is_success() && entry_point == ExportedFunction::Constructor {
+				let frame = self.frame_mut();
+				let account_id = frame.account_id.clone();
+
+				// It is not allowed to terminate a contract inside its constructor
+				if let CachedContract::Terminated = frame.contract_info {
+					return Err((Error::<T>::NotCallable.into(), code_len));
+				}
+
+				// Collect the rent for the first block to prevent the creation of very large
+				// contracts that never intended to pay for even one block.
+				// This also makes sure that it is above the subsistence threshold
+				// in order to keep up the guarantuee that we always leave a tombstone behind
+				// with the exception of a contract that called `seal_terminate`.
+				let contract = Rent::<T, E>
+					::charge(&account_id, frame.invalidate(), occupied_storage)
+					.map_err(|e| (e.into(), code_len))?
+					.ok_or((Error::<T>::NewContractNotFunded.into(), code_len))?;
+				frame.contract_info = CachedContract::Cached(contract);
+
+				// Deposit an instantiation event.
+				deposit_event::<T>(vec![], Event::Instantiated(
+					self.caller().clone(),
+					account_id,
+				));
+			}
+
+			Ok((output, code_len))
+		};
+
+		let (success, output) = with_transaction(|| {
+			let output = do_transaction();
 			match output {
-				Ok(_) => TransactionOutcome::Commit(output),
-				Err(_) => TransactionOutcome::Rollback(output),
+				Ok((ref result, _)) if result.is_success() => {
+					TransactionOutcome::Commit((true, output))
+				},
+				_ => TransactionOutcome::Rollback((false, output)),
 			}
 		});
-
-		if output.is_ok() && entry_point == ExportedFunction::Constructor {
-			let frame = self.frame_mut();
-			let account_id = frame.account_id.clone();
-
-			// It is not allowed to terminate a contract inside its constructor
-			if let CachedContract::Terminated = frame.contract_info {
-				return Err((Error::<T>::NotCallable.into(), code_len));
-			}
-
-			// Collect the rent for the first block to prevent the creation of very large
-			// contracts that never intended to pay for even one block.
-			// This also makes sure that it is above the subsistence threshold
-			// in order to keep up the guarantuee that we always leave a tombstone behind
-			// with the exception of a contract that called `seal_terminate`.
-			let contract = Rent::<T, E>::charge(&account_id, frame.invalidate(), occupied_storage)
-				.map_err(|e| (e.into(), code_len))?
-				.ok_or((Error::<T>::NewContractNotFunded.into(), code_len))?;
-			frame.contract_info = CachedContract::Cached(contract);
-
-			// Deposit an instantiation event.
-			deposit_event::<T>(vec![], Event::Instantiated(
-				self.caller().clone(),
-				account_id,
-			));
-		}
-
-		Ok((output?, code_len))
+		self.pop_frame(success);
+		output
 	}
 
 	/// Transfer some funds from `transactor` to `dest`.
@@ -721,25 +715,11 @@ where
 		Ok(())
 	}
 
-	fn initial_transfer(&self) -> DispatchResult {
-		Self::transfer(
-			self.caller_is_contract(),
-			false,
-			self.caller(),
-			&self.frame().account_id,
-			self.frame().value_transferred,
-		)
-	}
-
-	fn depth(&self) -> u32 {
-		(self.frames.len() + 1) as u32
-	}
-
-	fn caller_is_contract(&self) -> bool {
-		self.depth() > 1
-	}
-
 	fn pop_frame(&mut self, persist: bool) {
+		if !persist && self.frame().entry_point == ExportedFunction::Constructor {
+			self.account_counter.as_mut().map(|c| *c = c.wrapping_sub(1));
+		}
+
 		// Pop the current frame from the stack and return it in case it needs to interact
 		// with duplicates that might exist on the stack,.
 		let (account_id, contract) = {
@@ -747,6 +727,7 @@ where
 			if !persist {
 				return;
 			}
+
 			if let Some(frame) = frame {
 				if let CachedContract::Cached(contract) = frame.contract_info {
 					(frame.account_id, contract)
@@ -760,6 +741,9 @@ where
 						&self.first_frame.account_id,
 						ContractInfo::Alive(contract.clone())
 					);
+				}
+				if let Some(counter) = self.account_counter {
+					<AccountCounter<T>>::set(counter);
 				}
 				return;
 			}
@@ -780,6 +764,24 @@ where
 
 		// It is OK to store it here because active references to it are invalidated.
 		<ContractInfoOf<T>>::insert(&account_id, ContractInfo::Alive(contract));
+	}
+
+	fn initial_transfer(&self) -> DispatchResult {
+		Self::transfer(
+			self.caller_is_contract(),
+			false,
+			self.caller(),
+			&self.frame().account_id,
+			self.frame().value_transferred,
+		)
+	}
+
+	fn depth(&self) -> u32 {
+		(self.frames.len() + 1) as u32
+	}
+
+	fn caller_is_contract(&self) -> bool {
+		self.depth() > 1
 	}
 
 	fn frame(&self) -> &Frame<T> {
@@ -1866,7 +1868,7 @@ mod tests {
 			let contract = <ContractInfoOf<Test>>::get(address)
 				.and_then(|c| c.get_alive())
 				.unwrap();
-			assert_eq!(ctx.ext.rent_params(), &RentParams::new(address, &contract, executable));
+			assert_eq!(ctx.ext.rent_params(), &RentParams::new(address, &0, &contract, executable));
 			exec_success()
 		});
 
@@ -1895,7 +1897,7 @@ mod tests {
 			let contract = <ContractInfoOf<Test>>::get(address)
 				.and_then(|c| c.get_alive())
 				.unwrap();
-			let rent_params = RentParams::new(address, &contract, executable);
+			let rent_params = RentParams::new(address, &0, &contract, executable);
 
 			// Changing the allowance during the call: rent params stay unchanged.
 			let allowance = 42;

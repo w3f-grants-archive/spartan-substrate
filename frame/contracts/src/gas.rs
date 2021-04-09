@@ -272,7 +272,7 @@ mod tests {
 		let mut gas_meter = GasMeter::<Test>::new(50000);
 		assert!(!gas_meter.charge(SimpleToken(1)).is_err());
 
-		let mut tokens = gas_meter.tokens()[0..2].iter();
+		let mut tokens = gas_meter.tokens().iter();
 		match_tokens!(tokens, SimpleToken(1),);
 	}
 
