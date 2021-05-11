@@ -69,6 +69,15 @@ docker run --rm --init -it \
 
 Now you should see block production in the first terminal where node is running.
 
+#### Stopping the Client
+
+The client container will not respond to kill commands in the same terminal. Instead run this command in a seperate terminal.
+
+```
+docker kill node-template-spartan
+
+```
+
 ### Run In Development Mode
 
 #### Install Rust
