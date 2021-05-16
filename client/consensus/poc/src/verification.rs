@@ -17,7 +17,7 @@
 
 //! Verification for PoC headers.
 use super::{find_pre_digest, poc_err, BlockT, Epoch, Error};
-use crate::{INITIAL_SOLUTION_RANGE, SALT};
+use crate::SALT;
 use log::{debug, trace};
 use sc_consensus_slots::CheckedHeader;
 use schnorrkel::context::SigningContext;
@@ -41,6 +41,8 @@ pub(super) struct VerificationParams<'a, B: 'a + BlockT> {
     pub(super) slot_now: Slot,
     /// Epoch descriptor of the epoch this block _should_ be under, if it's valid.
     pub(super) epoch: &'a Epoch,
+    /// Solution range corresponding to this block.
+    pub(super) solution_range: u64,
     /// Spartan instance
     pub(super) spartan: &'a Spartan,
     /// Signing context for verifying signatures
@@ -66,6 +68,7 @@ where
         pre_digest,
         slot_now,
         epoch,
+        solution_range,
         spartan,
         signing_context,
     } = params;
@@ -101,6 +104,7 @@ where
         sig,
         &epoch,
         epoch.config.c,
+        solution_range,
         &spartan,
         &signing_context,
     )?;
@@ -125,13 +129,14 @@ fn check_primary_header<B: BlockT + Sized>(
     _signature: FarmerSignature,
     epoch: &Epoch,
     _c: (u64, u64),
+    solution_range: u64,
     spartan: &Spartan,
     signing_context: &SigningContext,
 ) -> Result<(), Error<B>> {
     if !is_within_solution_range(
         &pre_digest.solution,
         crate::create_challenge(epoch, pre_digest.slot),
-        INITIAL_SOLUTION_RANGE,
+        solution_range,
     ) {
         return Err(Error::OutsideOfSolutionRange(pre_digest.slot));
     }

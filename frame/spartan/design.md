@@ -77,7 +77,7 @@ The length is derived from the expected number of blocks in the epoch, such that
 Initially set to 32 blocks.
 
 ##### Era Duration
-A security parameter which defines the length of an era in slots.
+A security parameter which defines the length of an era in blocks.
 Each era shares the same `solution_range`. At the conclusion of each era, a new `solution_range` is calculated, based on the average `solution_range` over the last era.
 Roughly equivalent to the work-difficulty reset period in PoW blockchains.
 
@@ -90,7 +90,7 @@ A security parameter which defines the number of depth-first iterations for the 
 A higher round count increases security but at the cost of farmer experience and energy-efficiency.
 
 ##### Salt Update Interval
-A security parameter which defines the number of slots for which a given salt is valid.
+A security parameter which defines the number of blocks for which a given salt is valid.
 This is required to discourage compression attacks.
 A more frequent update interval linearly increases the computation required to preform the compression attack but also degrades the efficiency of the protocol, as the entire plot must be read and re-committed to at each update.
 

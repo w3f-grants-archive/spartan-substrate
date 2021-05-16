@@ -122,22 +122,29 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 ///
 /// Based on:
 /// <https://research.web3.foundation/en/latest/polkadot/block-production/Babe.html#-6.-practical-results>
-pub const MILLISECS_PER_BLOCK: u64 = 6000;
+const MILLISECS_PER_BLOCK: u64 = 6000;
 
 // NOTE: Currently it is not possible to change the slot duration after the chain has started.
 //       Attempting to do so will brick block production.
-pub const SLOT_DURATION: u64 = 1000;
+const SLOT_DURATION: u64 = 1000;
 
 // Time is measured by number of blocks.
 // pub const MINUTES: BlockNumber = 3_200 / (MILLISECS_PER_BLOCK as BlockNumber);
 // pub const HOURS: BlockNumber = MINUTES * 60;
 // pub const DAYS: BlockNumber = HOURS * 24;
 
-// 1 in 6 slots (on average, not counting collisions) will have a block.
-pub const SLOT_PROBABILITY: (u64, u64) = (1, 6);
+/// 1 in 6 slots (on average, not counting collisions) will have a block.
+const SLOT_PROBABILITY: (u64, u64) = (1, 6);
 
-pub const EPOCH_DURATION_IN_BLOCKS: BlockNumber = 32;
-pub const EPOCH_DURATION_IN_SLOTS: u64 = {
+/// Era duration in blocks.
+const ERA_DURATION_IN_BLOCKS: u32 = 5;
+
+// We assume initial plot size to be 1 GiB with piece size being 4096 bytes
+const INITIAL_SOLUTION_RANGE: u64 =
+    u64::MAX / (1024 * 1024 * 1024 / 4096) * SLOT_PROBABILITY.0 / SLOT_PROBABILITY.1;
+
+const EPOCH_DURATION_IN_BLOCKS: BlockNumber = 32;
+const EPOCH_DURATION_IN_SLOTS: u64 = {
     const SLOT_FILL_RATE: f64 = MILLISECS_PER_BLOCK as f64 / SLOT_DURATION as f64;
 
     (EPOCH_DURATION_IN_BLOCKS as f64 * SLOT_FILL_RATE) as u64
@@ -226,13 +233,20 @@ impl frame_system::Config for Runtime {
 
 parameter_types! {
     pub const EpochDuration: u64 = EPOCH_DURATION_IN_SLOTS;
+    pub const EraDuration: u32 = ERA_DURATION_IN_BLOCKS;
+    pub const InitialSolutionRange: u64 = INITIAL_SOLUTION_RANGE;
+    pub const SlotProbability: (u64, u64) = SLOT_PROBABILITY;
     pub const ExpectedBlockTime: Moment = MILLISECS_PER_BLOCK;
 }
 
 impl pallet_spartan::Config for Runtime {
     type EpochDuration = EpochDuration;
+    type EraDuration = EraDuration;
+    type InitialSolutionRange = InitialSolutionRange;
+    type SlotProbability = SlotProbability;
     type ExpectedBlockTime = ExpectedBlockTime;
     type EpochChangeTrigger = pallet_spartan::NormalEpochChange;
+    type EraChangeTrigger = pallet_spartan::NormalEraChange;
 
     // TODO: fix for milestone 3
     // type KeyOwnerProofSystem = Historical;
@@ -426,9 +440,14 @@ impl_runtime_apis! {
             sp_consensus_poc::PoCGenesisConfiguration {
                 slot_duration: PoC::slot_duration(),
                 epoch_length: EpochDuration::get(),
-                c: POC_GENESIS_EPOCH_CONFIG.c,
+                c: SlotProbability::get(),
                 randomness: PoC::randomness(),
             }
+        }
+
+        fn solution_range() -> u64 {
+            // TODO: Maybe this is not a correct value to have a default value
+            PoC::solution_range().unwrap_or_else(InitialSolutionRange::get)
         }
 
         fn current_epoch_start() -> sp_consensus_poc::Slot {

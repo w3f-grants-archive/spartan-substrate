@@ -5459,6 +5459,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "log",
+ "num-traits",
  "pallet-authorship",
  "pallet-balances",
  "pallet-offences",

@@ -25,18 +25,18 @@ use frame_support::{
     traits::{Get, OnTimestampSet},
     weights::Weight,
 };
+#[cfg(not(feature = "std"))]
+use num_traits::float::FloatCore;
+use sp_consensus_poc::{
+    digests::{NextConfigDescriptor, NextEpochDescriptor, NextSolutionRangeDescriptor, PreDigest},
+    ConsensusLog, Epoch, PoCEpochConfiguration, /*EquivocationProof, */ Slot, POC_ENGINE_ID,
+};
+pub use sp_consensus_poc::{FarmerId, RANDOMNESS_LENGTH};
 use sp_runtime::{
     generic::DigestItem,
     traits::{One, SaturatedConversion, Saturating, Zero},
 };
 use sp_std::prelude::*;
-
-use sp_consensus_poc::{
-    digests::{NextConfigDescriptor, NextEpochDescriptor, PreDigest},
-    ConsensusLog, Epoch, PoCEpochConfiguration, /*EquivocationProof, */ Slot, POC_ENGINE_ID,
-};
-
-pub use sp_consensus_poc::{FarmerId, RANDOMNESS_LENGTH};
 
 mod default_weights;
 mod equivocation;
@@ -76,6 +76,24 @@ impl EpochChangeTrigger for NormalEpochChange {
     }
 }
 
+/// Trigger an era change, if any should take place.
+pub trait EraChangeTrigger {
+    /// Trigger an era change, if any should take place. This should be called
+    /// during every block, after initialization is done.
+    fn trigger<T: Config>(now: T::BlockNumber);
+}
+
+/// A type signifying to Spartan that it should perform era changes with an internal trigger.
+pub struct NormalEraChange;
+
+impl EraChangeTrigger for NormalEraChange {
+    fn trigger<T: Config>(now: T::BlockNumber) {
+        if <Pallet<T>>::should_era_change(now) {
+            <Pallet<T>>::enact_era_change();
+        }
+    }
+}
+
 const UNDER_CONSTRUCTION_SEGMENT_LENGTH: usize = 256;
 
 type MaybeRandomness = Option<sp_consensus_poc::Randomness>;
@@ -100,6 +118,24 @@ pub mod pallet {
         #[pallet::constant]
         type EpochDuration: Get<u64>;
 
+        /// The amount of time, in blocks, that each era should last.
+        /// NOTE: Currently it is not possible to change the era duration after
+        /// the chain has started. Attempting to do so will brick block production.
+        #[pallet::constant]
+        type EraDuration: Get<u32>;
+
+        /// Initial solution range used for challenges during the very first era.
+        #[pallet::constant]
+        type InitialSolutionRange: Get<u64>;
+
+        /// How often in slots slots (on average, not counting collisions) will have a block.
+        ///
+        /// Expressed as a rational where the first member of the tuple is the
+        /// numerator and the second is the denominator. The rational should
+        /// represent a value between 0 and 1.
+        #[pallet::constant]
+        type SlotProbability: Get<(u64, u64)>;
+
         /// The expected average block time at which PoC should be creating
         /// blocks. Since PoC is probabilistic it is not trivial to figure out
         /// what the expected average block time should be based on the slot
@@ -114,6 +150,10 @@ pub mod pallet {
         /// Typically, the `ExternalTrigger` type should be used. An internal trigger should only be used
         /// when no other module is responsible for changing epochs.
         type EpochChangeTrigger: EpochChangeTrigger;
+
+        /// Spartan requires some logic to be triggered on every block to query for whether an era
+        /// has ended and to perform the transition to the next era.
+        type EraChangeTrigger: EraChangeTrigger;
 
         // TODO: Bring this back for milestone 3
         // /// The equivocation handling subsystem, defines methods to report an
@@ -169,6 +209,15 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn randomness)]
     pub type Randomness<T> = StorageValue<_, sp_consensus_poc::Randomness, ValueQuery>;
+
+    /// The solution range for *current* era.
+    #[pallet::storage]
+    #[pallet::getter(fn solution_range)]
+    pub type SolutionRange<T> = StorageValue<_, u64>;
+
+    /// The solution range for *current* era.
+    #[pallet::storage]
+    pub type EraStartSlot<T> = StorageValue<_, Slot>;
 
     /// Pending epoch configuration change that will be applied when the next epoch is enacted.
     #[pallet::storage]
@@ -373,6 +422,25 @@ impl<T: Config> Pallet<T> {
         }
     }
 
+    /// Determine whether an era change should take place at this block.
+    /// Assumes that initialization has already taken place.
+    pub fn should_era_change(now: T::BlockNumber) -> bool {
+        // The era has technically ended during the passage of time
+        // between this block and the last, but we have to "end" the epoch now,
+        // since there is no earlier possible block we could have done it.
+        let x = now % T::EraDuration::get().into() == 0_u32.into();
+        // TODO: Remove debug message
+        #[cfg(feature = "std")]
+        if x {
+            println!(
+                "Changing era on block {} with era duration {}",
+                now,
+                T::EraDuration::get()
+            );
+        }
+        x
+    }
+
     /// Return the _best guess_ block number, at which the next epoch change is predicted to happen.
     ///
     /// Returns None if the prediction is in the past; This implies an error internally in Spartan
@@ -455,6 +523,39 @@ impl<T: Config> Pallet<T> {
         }
     }
 
+    /// DANGEROUS: Enact era change. Should be done on every block where `should_era_change` has
+    /// returned `true`, and the caller is the only caller of this function.
+    pub fn enact_era_change() {
+        // PRECONDITION: caller has done initialization and is guaranteed by the session module to
+        // be called before this.
+        debug_assert!(Self::initialized().is_some());
+
+        let slot_probability = T::SlotProbability::get();
+
+        let previous_solution_range =
+            SolutionRange::<T>::get().unwrap_or_else(T::InitialSolutionRange::get);
+
+        let current_slot = CurrentSlot::<T>::get();
+        let era_slot_count = EraStartSlot::<T>::get().map_or(current_slot.into(), |start_slot| {
+            u64::from(current_slot) - u64::from(start_slot)
+        });
+        let actual_slots_per_block = era_slot_count as f64 / T::EraDuration::get() as f64;
+        let expected_slots_per_block = slot_probability.1 as f64 / slot_probability.0 as f64;
+        let adjustment_factor = actual_slots_per_block / expected_slots_per_block;
+
+        let solution_range = (previous_solution_range as f64 * adjustment_factor).round() as u64;
+
+        SolutionRange::<T>::put(solution_range);
+        EraStartSlot::<T>::put(current_slot);
+
+        let next_solution_range = NextSolutionRangeDescriptor { solution_range };
+        Self::deposit_consensus(ConsensusLog::NextSolutionRangeData(next_solution_range));
+
+        if let Some(next_config) = NextEpochConfig::<T>::get() {
+            EpochConfig::<T>::put(next_config);
+        }
+    }
+
     /// Finds the start slot of the current epoch. only guaranteed to
     /// give correct results after `do_initialize` of the first block
     /// in the chain (as its result is based off of `GenesisSlot`).
@@ -532,6 +633,13 @@ impl<T: Config> Pallet<T> {
     }
 
     fn do_initialize(now: T::BlockNumber) {
+        // do_initialize can be called twice (TODO: not sure why exactly)
+        // => let's ensure that we only modify the storage once per block
+        let initialized = Self::initialized().is_some();
+        if initialized {
+            return;
+        }
+
         let maybe_pre_digest: Option<PreDigest> = <frame_system::Pallet<T>>::digest()
             .logs
             .iter()
@@ -584,8 +692,13 @@ impl<T: Config> Pallet<T> {
         // Place either the primary PoR output into the `AuthorPorRandomness` storage item.
         AuthorPorRandomness::<T>::put(maybe_randomness);
 
+        // TODO: This code seems to be executed twice for every block, but probably shouldn't
+        #[cfg(feature = "std")]
+        println!("Running block triggers");
         // enact epoch change, if necessary.
-        T::EpochChangeTrigger::trigger::<T>(now)
+        T::EpochChangeTrigger::trigger::<T>(now);
+        // enact era change, if necessary.
+        T::EraChangeTrigger::trigger::<T>(now);
     }
 
     /// Call this function exactly once when an epoch changes, to update the

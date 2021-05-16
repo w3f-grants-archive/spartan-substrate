@@ -115,8 +115,6 @@ pub mod aux_schema;
 #[cfg(test)]
 mod tests;
 
-// TODO: Real adjustable solution range, Milestone 2. For now configure for 1 GB plot.
-const INITIAL_SOLUTION_RANGE: u64 = u64::MAX / 262_144 / 2;
 // TODO: Replace fixed salt with something
 const SALT: Salt = [1u8; 32];
 
@@ -457,11 +455,11 @@ where
         on_claim_slot: Box::new({
             let new_slot_senders = Arc::clone(&new_slot_senders);
 
-            move |slot, epoch| {
+            move |slot, epoch, solution_range| {
                 let slot_info = NewSlotInfo {
                     slot,
                     challenge: create_challenge(epoch, slot),
-                    solution_range: INITIAL_SOLUTION_RANGE,
+                    solution_range,
                 };
                 let (solution_sender, solution_receiver) = mpsc::sync_channel(0);
                 {
@@ -651,7 +649,7 @@ struct PoCSlotWorker<B: BlockT, C, E, I, SO, BS> {
     backoff_authoring_blocks: Option<BS>,
     epoch_changes: SharedEpochChanges<B, Epoch>,
     config: Config,
-    on_claim_slot: Box<dyn (Fn(Slot, &Epoch) -> Option<PreDigest>) + Send + Sync + 'static>,
+    on_claim_slot: Box<dyn (Fn(Slot, &Epoch, u64) -> Option<PreDigest>) + Send + Sync + 'static>,
     block_proposal_slot_portion: SlotProportion,
     telemetry: Option<TelemetryHandle>,
 }
@@ -706,7 +704,7 @@ where
 
     fn claim_slot(
         &self,
-        _parent_header: &B::Header,
+        parent_header: &B::Header,
         slot: Slot,
         epoch_descriptor: &ViableEpochDescriptor<B::Hash, NumberFor<B>, Epoch>,
     ) -> Option<Self::Claim> {
@@ -716,7 +714,14 @@ where
         let epoch = epoch_changes
             .viable_epoch(&epoch_descriptor, |slot| Epoch::genesis(&self.config, slot))?;
 
-        let claim: Option<PreDigest> = (self.on_claim_slot)(slot, epoch.as_ref());
+        let claim: Option<PreDigest> = (self.on_claim_slot)(
+            slot,
+            epoch.as_ref(),
+            self.client
+                .runtime_api()
+                .solution_range(&BlockId::Hash(parent_header.hash()))
+                .ok()?,
+        );
 
         if claim.is_some() {
             debug!(target: "poc", "Claimed slot {}", slot);
@@ -1187,6 +1192,11 @@ where
         let viable_epoch = epoch_changes
             .viable_epoch(&epoch_descriptor, |slot| Epoch::genesis(&self.config, slot))
             .ok_or_else(|| Error::<Block>::FetchEpoch(parent_hash))?;
+        let solution_range = self
+            .client
+            .runtime_api()
+            .solution_range(&BlockId::Hash(parent_hash))
+            .map_err(Error::<Block>::RuntimeApi)?;
 
         // We add one to the current slot to allow for some small drift.
         // FIXME #1019 in the future, alter this queue to allow deferring of headers
@@ -1195,6 +1205,7 @@ where
             pre_digest: Some(pre_digest),
             slot_now: slot_now + 1,
             epoch: viable_epoch.as_ref(),
+            solution_range,
             spartan: &self.spartan,
             signing_context: &self.signing_context,
         };

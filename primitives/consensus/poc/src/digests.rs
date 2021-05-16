@@ -99,6 +99,14 @@ impl From<NextConfigDescriptor> for PoCEpochConfiguration {
     }
 }
 
+/// Information about the solution range, if changed. This is broadcast in the first
+/// block of the era.
+#[derive(Decode, Encode, PartialEq, Eq, Clone, RuntimeDebug)]
+pub struct NextSolutionRangeDescriptor {
+    /// Solution range used for challenges.
+    pub solution_range: u64,
+}
+
 /// A digest item which is usable with PoC consensus.
 pub trait CompatibleDigestItem: Sized {
     /// Construct a digest item which contains a PoC pre-digest.

@@ -611,7 +611,10 @@ fn can_author_block() {
         randomness: [0; 32],
         epoch_index: 1,
         duration: 100,
-        config: PoCEpochConfiguration { c: (3, 10) },
+        config: PoCEpochConfiguration {
+            c: (3, 10),
+            solution_range: u64::MAX,
+        },
     };
 
     let mut _config = crate::PoCGenesisConfiguration {
@@ -619,6 +622,7 @@ fn can_author_block() {
         epoch_length: 100,
         c: (3, 10),
         randomness: [0; 32],
+        solution_range: u64::MAX,
     };
 
     // we might need to try a couple of times
