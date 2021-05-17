@@ -550,10 +550,6 @@ impl<T: Config> Pallet<T> {
 
         let next_solution_range = NextSolutionRangeDescriptor { solution_range };
         Self::deposit_consensus(ConsensusLog::NextSolutionRangeData(next_solution_range));
-
-        if let Some(next_config) = NextEpochConfig::<T>::get() {
-            EpochConfig::<T>::put(next_config);
-        }
     }
 
     /// Finds the start slot of the current epoch. only guaranteed to
