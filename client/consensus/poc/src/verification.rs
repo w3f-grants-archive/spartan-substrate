@@ -133,38 +133,53 @@ fn check_primary_header<B: BlockT + Sized>(
     spartan: &Spartan,
     signing_context: &SigningContext,
 ) -> Result<(), Error<B>> {
-    if !is_within_solution_range(
+    verify_solution(
         &pre_digest.solution,
-        crate::create_challenge(epoch, pre_digest.slot),
+        epoch,
+        solution_range,
+        pre_digest.slot,
+        spartan,
+        signing_context,
+    )?;
+
+    // TODO: Other verification?
+
+    Ok(())
+}
+
+pub(crate) fn verify_solution<B: BlockT + Sized>(
+    solution: &Solution,
+    epoch: &Epoch,
+    solution_range: u64,
+    slot: Slot,
+    spartan: &Spartan,
+    signing_context: &SigningContext,
+) -> Result<(), Error<B>> {
+    if !is_within_solution_range(
+        &solution,
+        crate::create_challenge(epoch, slot),
         solution_range,
     ) {
-        return Err(Error::OutsideOfSolutionRange(pre_digest.slot));
+        return Err(Error::OutsideOfSolutionRange(slot));
     }
 
-    let piece: Piece = pre_digest
-        .solution
+    let piece: Piece = solution
         .encoding
         .as_slice()
         .try_into()
         .map_err(|_error| Error::EncodingOfWrongSize)?;
 
-    if !spartan::is_commitment_valid(&piece, &pre_digest.solution.tag, &SALT) {
-        return Err(Error::InvalidCommitment(pre_digest.slot));
+    if !spartan::is_commitment_valid(&piece, &solution.tag, &SALT) {
+        return Err(Error::InvalidCommitment(slot));
     }
 
-    if !is_signature_valid(signing_context, &pre_digest.solution) {
+    if !is_signature_valid(signing_context, &solution) {
         return Err(Error::BadSignature);
     }
 
-    if !spartan.is_encoding_valid(
-        piece,
-        pre_digest.solution.public_key.as_ref(),
-        pre_digest.solution.nonce,
-    ) {
-        return Err(Error::InvalidEncoding(pre_digest.slot));
+    if !spartan.is_encoding_valid(piece, solution.public_key.as_ref(), solution.nonce) {
+        return Err(Error::InvalidEncoding(slot));
     }
-
-    // TODO: Other verification?
 
     Ok(())
 }

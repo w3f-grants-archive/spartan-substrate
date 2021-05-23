@@ -130,13 +130,8 @@ pub struct NewSlotInfo {
 }
 
 /// A function that can be called whenever it is necessary to create a subscription for new slots
-pub type NewSlotNotifier = Arc<
-    Box<
-        dyn (Fn() -> mpsc::Receiver<(NewSlotInfo, mpsc::SyncSender<Option<Solution>>)>)
-            + Send
-            + Sync,
-    >,
->;
+pub type NewSlotNotifier =
+    Arc<Box<dyn (Fn() -> mpsc::Receiver<(NewSlotInfo, mpsc::Sender<Solution>)>) + Send + Sync>>;
 
 /// PoC epoch information
 #[derive(Decode, Encode, PartialEq, Eq, Clone, Debug)]
@@ -439,9 +434,8 @@ where
 
     let config = poc_link.config;
 
-    let new_slot_senders: Arc<
-        Mutex<Vec<mpsc::SyncSender<(NewSlotInfo, mpsc::SyncSender<Option<Solution>>)>>>,
-    > = Arc::default();
+    let new_slot_senders: Arc<Mutex<Vec<mpsc::Sender<(NewSlotInfo, mpsc::Sender<Solution>)>>>> =
+        Arc::default();
 
     let worker = PoCSlotWorker {
         client: client.clone(),
@@ -455,13 +449,12 @@ where
         on_claim_slot: Box::new({
             let new_slot_senders = Arc::clone(&new_slot_senders);
 
-            move |slot, epoch, solution_range| {
+            move |slot, epoch, solution_range, solution_sender: mpsc::Sender<Solution>| {
                 let slot_info = NewSlotInfo {
                     slot,
                     challenge: create_challenge(epoch, slot),
                     solution_range,
                 };
-                let (solution_sender, solution_receiver) = mpsc::sync_channel(0);
                 {
                     // drain_filter() would be more convenient here
                     let mut new_slot_senders = new_slot_senders.lock();
@@ -479,17 +472,11 @@ where
                         }
                     }
                 }
-                drop(solution_sender);
-
-                while let Ok(solution) = solution_receiver.recv() {
-                    if let Some(solution) = solution {
-                        return Some(PreDigest { solution, slot });
-                    }
-                }
-
-                None
             }
         }),
+        spartan: Spartan::new(),
+        // TODO: Figure out how to remove explicit schnorrkel dependency
+        signing_context: schnorrkel::context::signing_context(SIGNING_CONTEXT),
         block_proposal_slot_portion,
         telemetry,
     };
@@ -607,8 +594,7 @@ impl<B: BlockT> PoCWorkerHandle<B> {
 pub struct PoCWorker<B: BlockT> {
     inner: Pin<Box<dyn futures::Future<Output = ()> + Send + 'static>>,
     handle: PoCWorkerHandle<B>,
-    new_slot_senders:
-        Arc<Mutex<Vec<mpsc::SyncSender<(NewSlotInfo, mpsc::SyncSender<Option<Solution>>)>>>>,
+    new_slot_senders: Arc<Mutex<Vec<mpsc::Sender<(NewSlotInfo, mpsc::Sender<Solution>)>>>>,
 }
 
 impl<B: BlockT> PoCWorker<B> {
@@ -617,7 +603,7 @@ impl<B: BlockT> PoCWorker<B> {
     pub fn get_new_slot_notifier(&self) -> NewSlotNotifier {
         let new_slot_senders = Arc::clone(&self.new_slot_senders);
         Arc::new(Box::new(move || {
-            let (new_slot_sender, new_slot_receiver) = mpsc::sync_channel(0);
+            let (new_slot_sender, new_slot_receiver) = mpsc::channel();
             new_slot_senders.lock().push(new_slot_sender);
             new_slot_receiver
         }))
@@ -649,7 +635,9 @@ struct PoCSlotWorker<B: BlockT, C, E, I, SO, BS> {
     backoff_authoring_blocks: Option<BS>,
     epoch_changes: SharedEpochChanges<B, Epoch>,
     config: Config,
-    on_claim_slot: Box<dyn (Fn(Slot, &Epoch, u64) -> Option<PreDigest>) + Send + Sync + 'static>,
+    on_claim_slot: Box<dyn Fn(Slot, &Epoch, u64, mpsc::Sender<Solution>) + Send + Sync + 'static>,
+    spartan: Spartan,
+    signing_context: SigningContext,
     block_proposal_slot_portion: SlotProportion,
     telemetry: Option<TelemetryHandle>,
 }
@@ -713,24 +701,39 @@ where
         let epoch_changes = self.epoch_changes.shared_data();
         let epoch = epoch_changes
             .viable_epoch(&epoch_descriptor, |slot| Epoch::genesis(&self.config, slot))?;
+        let solution_range = self
+            .client
+            .runtime_api()
+            .solution_range(&BlockId::Hash(parent_header.hash()))
+            .ok()?;
 
-        let claim: Option<PreDigest> = (self.on_claim_slot)(
-            slot,
-            epoch.as_ref(),
-            self.client
-                .runtime_api()
-                .solution_range(&BlockId::Hash(parent_header.hash()))
-                .ok()?,
-        );
+        let (solution_sender, solution_receiver) = mpsc::channel();
 
-        if claim.is_some() {
-            debug!(target: "poc", "Claimed slot {}", slot);
+        (self.on_claim_slot)(slot, epoch.as_ref(), solution_range, solution_sender);
+
+        while let Ok(solution) = solution_receiver.recv() {
+            // TODO: Print error if solution is invalid
+            match verification::verify_solution::<B>(
+                &solution,
+                epoch.as_ref(),
+                solution_range,
+                slot,
+                &self.spartan,
+                &self.signing_context,
+            ) {
+                Ok(_) => {
+                    debug!(target: "poc", "Claimed slot {}", slot);
+                    let public_key = solution.public_key.clone();
+
+                    return Some((PreDigest { solution, slot }, public_key));
+                }
+                Err(error) => {
+                    warn!(target: "poc", "Invalid solution received for slot {}: {:?}", slot, error);
+                }
+            }
         }
 
-        claim.map(|claim| {
-            let public_key = claim.solution.public_key.clone();
-            (claim, public_key)
-        })
+        None
     }
 
     fn pre_digest_data(
