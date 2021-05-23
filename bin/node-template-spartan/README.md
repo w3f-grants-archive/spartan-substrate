@@ -84,7 +84,8 @@ Now you should see block production in the first terminal where node is running.
 
 #### Stopping the Client
 
-The client container will not respond to kill commands in the same terminal. Instead, run this command in a separate terminal.
+The client container may not respond to kill commands in the same terminal.
+If it happens, run this command in a separate terminal.
 
 ```
 docker kill node-template-spartan
@@ -101,6 +102,7 @@ docker run --rm --init -it \
   subspacelabs/node-template-spartan \
     --dev \
     --tmp \
+    --ws-external \
     --bootnodes /ip4/$BOOTSTRAP_CLIENT_PORT/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
 ```
 
