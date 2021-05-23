@@ -428,17 +428,7 @@ impl<T: Config> Pallet<T> {
         // The era has technically ended during the passage of time
         // between this block and the last, but we have to "end" the epoch now,
         // since there is no earlier possible block we could have done it.
-        let x = now % T::EraDuration::get().into() == 0_u32.into();
-        // TODO: Remove debug message
-        #[cfg(feature = "std")]
-        if x {
-            println!(
-                "Changing era on block {} with era duration {}",
-                now,
-                T::EraDuration::get()
-            );
-        }
-        x
+        now % T::EraDuration::get().into() == 1_u32.into()
     }
 
     /// Return the _best guess_ block number, at which the next epoch change is predicted to happen.
@@ -536,9 +526,10 @@ impl<T: Config> Pallet<T> {
             SolutionRange::<T>::get().unwrap_or_else(T::InitialSolutionRange::get);
 
         let current_slot = CurrentSlot::<T>::get();
-        let era_slot_count = EraStartSlot::<T>::get().map_or(current_slot.into(), |start_slot| {
-            u64::from(current_slot) - u64::from(start_slot)
-        });
+        // If Era start slot is not found it means we have just finished the first era
+        let era_start_slot = EraStartSlot::<T>::get().unwrap_or_else(|| GenesisSlot::<T>::get());
+        let era_slot_count = u64::from(current_slot) - u64::from(era_start_slot);
+
         let actual_slots_per_block = era_slot_count as f64 / T::EraDuration::get() as f64;
         let expected_slots_per_block = slot_probability.1 as f64 / slot_probability.0 as f64;
         let adjustment_factor = actual_slots_per_block / expected_slots_per_block;
@@ -629,13 +620,6 @@ impl<T: Config> Pallet<T> {
     }
 
     fn do_initialize(now: T::BlockNumber) {
-        // do_initialize can be called twice (TODO: not sure why exactly)
-        // => let's ensure that we only modify the storage once per block
-        let initialized = Self::initialized().is_some();
-        if initialized {
-            return;
-        }
-
         let maybe_pre_digest: Option<PreDigest> = <frame_system::Pallet<T>>::digest()
             .logs
             .iter()
@@ -688,9 +672,6 @@ impl<T: Config> Pallet<T> {
         // Place either the primary PoR output into the `AuthorPorRandomness` storage item.
         AuthorPorRandomness::<T>::put(maybe_randomness);
 
-        // TODO: This code seems to be executed twice for every block, but probably shouldn't
-        #[cfg(feature = "std")]
-        println!("Running block triggers");
         // enact epoch change, if necessary.
         T::EpochChangeTrigger::trigger::<T>(now);
         // enact era change, if necessary.
