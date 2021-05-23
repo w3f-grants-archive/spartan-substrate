@@ -428,7 +428,7 @@ impl<T: Config> Pallet<T> {
         // The era has technically ended during the passage of time
         // between this block and the last, but we have to "end" the epoch now,
         // since there is no earlier possible block we could have done it.
-        now % T::EraDuration::get().into() == 1_u32.into()
+        now != One::one() && now % T::EraDuration::get().into() == 1_u32.into()
     }
 
     /// Return the _best guess_ block number, at which the next epoch change is predicted to happen.
