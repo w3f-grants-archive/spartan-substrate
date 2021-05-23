@@ -137,7 +137,7 @@ const SLOT_DURATION: u64 = 1000;
 const SLOT_PROBABILITY: (u64, u64) = (1, 6);
 
 /// Era duration in blocks.
-const ERA_DURATION_IN_BLOCKS: u32 = 5;
+const ERA_DURATION_IN_BLOCKS: u32 = 2016;
 
 // We assume initial plot size to be 1 GiB with piece size being 4096 bytes
 const INITIAL_SOLUTION_RANGE: u64 =
