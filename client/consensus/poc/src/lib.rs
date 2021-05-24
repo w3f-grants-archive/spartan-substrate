@@ -712,7 +712,6 @@ where
         (self.on_claim_slot)(slot, epoch.as_ref(), solution_range, solution_sender);
 
         while let Ok(solution) = solution_receiver.recv() {
-            // TODO: Print error if solution is invalid
             match verification::verify_solution::<B>(
                 &solution,
                 epoch.as_ref(),

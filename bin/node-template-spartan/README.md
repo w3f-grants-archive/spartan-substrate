@@ -53,7 +53,7 @@ docker run --rm -it \
 Create virtual network, pull latest image and start a single node development chain:
 ```bash
 docker network create spartan
-docker pull subspacelabs/subspacelabs/node-template-spartan
+docker pull subspacelabs/node-template-spartan
 docker run --rm --init -it \
   --net spartan \
   --name node-template-spartan \
