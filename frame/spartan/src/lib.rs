@@ -538,9 +538,6 @@ impl<T: Config> Pallet<T> {
 
         SolutionRange::<T>::put(solution_range);
         EraStartSlot::<T>::put(current_slot);
-
-        let next_solution_range = NextSolutionRangeDescriptor { solution_range };
-        Self::deposit_consensus(ConsensusLog::NextSolutionRangeData(next_solution_range));
     }
 
     /// Finds the start slot of the current epoch. only guaranteed to
@@ -664,13 +661,19 @@ impl<T: Config> Pallet<T> {
             sp_io::hashing::blake2_256(&digest.solution.signature)
         });
 
-        // For primary PoR output we place it in the `Initialized` storage
+        // For PoR output we place it in the `Initialized` storage
         // item and it'll be put onto the under-construction randomness later,
         // once we've decided which epoch this block is in.
         Initialized::<T>::put(maybe_randomness);
 
-        // Place either the primary PoR output into the `AuthorPorRandomness` storage item.
+        // Place PoR output into the `AuthorPorRandomness` storage item.
         AuthorPorRandomness::<T>::put(maybe_randomness);
+
+        // Deposit solution range data such that light client can validate blocks later.
+        let next_solution_range = NextSolutionRangeDescriptor {
+            solution_range: SolutionRange::<T>::get().unwrap_or_else(T::InitialSolutionRange::get),
+        };
+        Self::deposit_consensus(ConsensusLog::NextSolutionRangeData(next_solution_range));
 
         // enact epoch change, if necessary.
         T::EpochChangeTrigger::trigger::<T>(now);

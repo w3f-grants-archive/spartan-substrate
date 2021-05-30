@@ -103,7 +103,7 @@ use sp_api::ApiExt;
 use sp_blockchain::{
     Error as ClientError, HeaderBackend, HeaderMetadata, ProvideCache, Result as ClientResult,
 };
-use sp_consensus_poc::digests::Solution;
+use sp_consensus_poc::digests::{NextSolutionRangeDescriptor, Solution};
 use sp_consensus_poc::Randomness;
 use sp_consensus_slots::Slot;
 use sp_consensus_spartan::spartan::{Salt, Spartan, SIGNING_CONTEXT};
@@ -205,6 +205,9 @@ pub enum Error<B: BlockT> {
     /// Multiple PoC config change digests
     #[display(fmt = "Multiple PoC config change digests, rejecting!")]
     MultipleConfigChangeDigests,
+    /// Multiple PoC solution range digests
+    #[display(fmt = "Multiple PoC solution range digests, rejecting!")]
+    MultipleSolutionRangeDigests,
     /// Could not extract timestamp and slot
     #[display(fmt = "Could not extract timestamp and slot: {:?}", _0)]
     Extraction(sp_consensus::Error),
@@ -260,6 +263,9 @@ pub enum Error<B: BlockT> {
     /// Parent block has no associated weight
     #[display(fmt = "Parent block of {} has no associated weight", _0)]
     ParentBlockNoAssociatedWeight(B::Hash),
+    /// Block has no associated solution range
+    #[display(fmt = "Missing solution range for block {}", _0)]
+    MissingSolutionRange(B::Hash),
     #[display(fmt = "Checking inherents failed: {}", _0)]
     /// Check Inherents error
     CheckInherents(String),
@@ -948,6 +954,31 @@ where
     Ok(config_digest)
 }
 
+/// Extract the PoC solution range change digest from the given header, if it exists.
+fn find_next_solution_range_digest<B: BlockT>(
+    header: &B::Header,
+) -> Result<Option<NextSolutionRangeDescriptor>, Error<B>>
+where
+    DigestItemFor<B>: CompatibleDigestItem,
+{
+    let mut solution_range_digest: Option<_> = None;
+    for log in header.digest().logs() {
+        trace!(target: "poc", "Checking log {:?}, looking for solution range digest.", log);
+        let log = log.try_to::<ConsensusLog>(OpaqueDigestItemId::Consensus(&POC_ENGINE_ID));
+        match (log, solution_range_digest.is_some()) {
+            (Some(ConsensusLog::NextSolutionRangeData(_)), true) => {
+                return Err(poc_err(Error::MultipleSolutionRangeDigests))
+            }
+            (Some(ConsensusLog::NextSolutionRangeData(solution_range)), false) => {
+                solution_range_digest = Some(solution_range)
+            }
+            _ => trace!(target: "poc", "Ignoring digest not meant for us"),
+        }
+    }
+
+    Ok(solution_range_digest)
+}
+
 #[derive(Default, Clone)]
 struct TimeSource(Arc<Mutex<(Option<Duration>, Vec<(Instant, u64)>)>>);
 
@@ -1194,11 +1225,10 @@ where
         let viable_epoch = epoch_changes
             .viable_epoch(&epoch_descriptor, |slot| Epoch::genesis(&self.config, slot))
             .ok_or_else(|| Error::<Block>::FetchEpoch(parent_hash))?;
-        let solution_range = self
-            .client
-            .runtime_api()
-            .solution_range(&BlockId::Hash(parent_hash))
-            .map_err(Error::<Block>::RuntimeApi)?;
+        // TODO: Is it actually secure to validate it using solution range digest?
+        let solution_range = find_next_solution_range_digest::<Block>(&header)?
+            .ok_or_else(|| Error::<Block>::MissingSolutionRange(hash))?
+            .solution_range;
 
         // We add one to the current slot to allow for some small drift.
         // FIXME #1019 in the future, alter this queue to allow deferring of headers
