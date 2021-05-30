@@ -106,6 +106,19 @@ docker run --rm --init -it \
     --bootnodes /ip4/$BOOTSTRAP_CLIENT_PORT/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
 ```
 
+#### Run more nodes on the test network
+
+If above setup is not enough, you can use `run-node-farmer-pair.sh` script to run more full nodes on the network, each with own farmer.
+
+Usage is simple:
+```
+./run-node-farmer-pair.sh test
+```
+
+Where `test` is the name of the pair. You can create as many pairs as needed, they will all join the same test network.
+
+Use `Ctrl+C` to stop the pair, everything will be stopped and cleaned up automatically.
+
 ### Run In Development Mode
 
 #### Install Rust
