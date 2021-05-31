@@ -106,6 +106,22 @@ docker run --rm --init -it \
     --bootnodes /ip4/$BOOTSTRAP_CLIENT_PORT/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
 ```
 
+#### Running Light Client
+
+We can also run light client and sync the chain from the client we started earlier:
+```
+BOOTSTRAP_CLIENT_PORT=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
+docker run --rm --init -it \
+  --net spartan \
+  --name node-template-spartan-light \
+  subspacelabs/node-template-spartan \
+    --dev \
+    --tmp \
+    --light \
+    --ws-external \
+    --bootnodes /ip4/$BOOTSTRAP_CLIENT_PORT/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
+```
+
 #### Run more nodes on the test network
 
 If above setup is not enough, you can use `run-node-farmer-pair.sh` script to run more full nodes on the network, each with own farmer.
