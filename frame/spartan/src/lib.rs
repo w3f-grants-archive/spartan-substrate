@@ -669,16 +669,16 @@ impl<T: Config> Pallet<T> {
         // Place PoR output into the `AuthorPorRandomness` storage item.
         AuthorPorRandomness::<T>::put(maybe_randomness);
 
+        // enact epoch change, if necessary.
+        T::EpochChangeTrigger::trigger::<T>(now);
+        // enact era change, if necessary.
+        T::EraChangeTrigger::trigger::<T>(now);
+
         // Deposit solution range data such that light client can validate blocks later.
         let next_solution_range = NextSolutionRangeDescriptor {
             solution_range: SolutionRange::<T>::get().unwrap_or_else(T::InitialSolutionRange::get),
         };
         Self::deposit_consensus(ConsensusLog::NextSolutionRangeData(next_solution_range));
-
-        // enact epoch change, if necessary.
-        T::EpochChangeTrigger::trigger::<T>(now);
-        // enact era change, if necessary.
-        T::EraChangeTrigger::trigger::<T>(now);
     }
 
     /// Call this function exactly once when an epoch changes, to update the
