@@ -18,11 +18,8 @@
 
 //! Test utilities
 
-use crate::{
-    self as pallet_spartan, Config, EraChangeTrigger, FarmerId, NormalEpochChange, NormalEraChange,
-};
+use crate::{self as pallet_spartan, Config, FarmerId, NormalEpochChange, NormalEraChange};
 use codec::Encode;
-use frame_benchmarking::frame_support::pallet_prelude::Get;
 use frame_support::{parameter_types, traits::OnInitialize};
 use frame_system::InitKind;
 use schnorrkel::Keypair;
@@ -129,11 +126,18 @@ impl pallet_balances::Config for Test {
     type WeightInfo = ();
 }
 
+/// 1 in 6 slots (on average, not counting collisions) will have a block.
+pub const SLOT_PROBABILITY: (u64, u64) = (3, 10);
+
+pub const INITIAL_SOLUTION_RANGE: u64 =
+    u64::MAX / (1024 * 1024 * 1024 / 4096) * SLOT_PROBABILITY.0 / SLOT_PROBABILITY.1;
+
 parameter_types! {
     pub const EpochDuration: u64 = 3;
-    pub const EraDuration: u32 = 5;
-    pub const InitialSolutionRange: u64 = u64::MAX;
-    pub const SlotProbability: (u64, u64) = (3, 10);
+    pub const EraDuration: u32 = 4;
+    // 1GB
+    pub const InitialSolutionRange: u64 = INITIAL_SOLUTION_RANGE;
+    pub const SlotProbability: (u64, u64) = SLOT_PROBABILITY;
     pub const ExpectedBlockTime: u64 = 1;
 }
 
@@ -153,7 +157,7 @@ impl Config for Test {
     type WeightInfo = ();
 }
 
-pub fn go_to_block(n: u64, s: u64) {
+pub fn go_to_block(block: u64, slot: u64) {
     use frame_support::traits::OnFinalize;
 
     Spartan::on_finalize(System::block_number());
@@ -168,10 +172,10 @@ pub fn go_to_block(n: u64, s: u64) {
     let keypair = Keypair::generate();
     let ctx = schnorrkel::context::signing_context(SIGNING_CONTEXT);
     let encoding: Piece = [0u8; 4096];
-    let tag: Tag = [(n % 8) as u8; 8];
+    let tag: Tag = [(block % 8) as u8; 8];
 
     let pre_digest = make_pre_digest(
-        s.into(),
+        slot.into(),
         Solution {
             public_key: FarmerId::from_slice(&keypair.public.to_bytes()),
             nonce: 0,
@@ -181,9 +185,9 @@ pub fn go_to_block(n: u64, s: u64) {
         },
     );
 
-    System::initialize(&n, &parent_hash, &pre_digest, InitKind::Full);
+    System::initialize(&block, &parent_hash, &pre_digest, InitKind::Full);
 
-    Spartan::on_initialize(n);
+    Spartan::on_initialize(block);
 }
 
 /// Slots will grow accordingly to blocks

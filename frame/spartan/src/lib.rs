@@ -1,3 +1,4 @@
+#![feature(assert_matches)]
 // Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
 // Copyright (C) 2021 Subspace Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
@@ -530,6 +531,9 @@ impl<T: Config> Pallet<T> {
         let era_start_slot = EraStartSlot::<T>::get().unwrap_or_else(|| GenesisSlot::<T>::get());
         let era_slot_count = u64::from(current_slot) - u64::from(era_start_slot);
 
+        // Now we need to re-calculate solution range. The idea here is to keep block production at
+        // the same pace while space pledged on the network changes. For this we adjust previous
+        // solution range according to actual and expected number of blocks per era.
         let actual_slots_per_block = era_slot_count as f64 / T::EraDuration::get() as f64;
         let expected_slots_per_block = slot_probability.1 as f64 / slot_probability.0 as f64;
         let adjustment_factor = actual_slots_per_block / expected_slots_per_block;
