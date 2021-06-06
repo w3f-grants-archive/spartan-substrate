@@ -95,7 +95,7 @@ docker kill node-template-spartan
 
 We can now run another full client and sync the chain from the client we started earlier:
 ```
-BOOTSTRAP_CLIENT_PORT=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
+BOOTSTRAP_CLIENT_IP=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
 docker run --rm --init -it \
   --net spartan \
   --name node-template-spartan-full \
@@ -103,14 +103,14 @@ docker run --rm --init -it \
     --dev \
     --tmp \
     --ws-external \
-    --bootnodes /ip4/$BOOTSTRAP_CLIENT_PORT/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
+    --bootnodes /ip4/$BOOTSTRAP_CLIENT_IP/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
 ```
 
 #### Running Light Client
 
 We can also run light client and sync the chain from the client we started earlier:
 ```
-BOOTSTRAP_CLIENT_PORT=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
+BOOTSTRAP_CLIENT_IP=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
 docker run --rm --init -it \
   --net spartan \
   --name node-template-spartan-light \
@@ -119,7 +119,7 @@ docker run --rm --init -it \
     --tmp \
     --light \
     --ws-external \
-    --bootnodes /ip4/$BOOTSTRAP_CLIENT_PORT/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
+    --bootnodes /ip4/$BOOTSTRAP_CLIENT_IP/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
 ```
 
 #### Run more nodes on the test network
