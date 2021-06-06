@@ -18,8 +18,11 @@
 
 //! Test utilities
 
-use crate::{self as pallet_spartan, Config, FarmerId, NormalEpochChange};
+use crate::{
+    self as pallet_spartan, Config, EraChangeTrigger, FarmerId, NormalEpochChange, NormalEraChange,
+};
 use codec::Encode;
+use frame_benchmarking::frame_support::pallet_prelude::Get;
 use frame_support::{parameter_types, traits::OnInitialize};
 use frame_system::InitKind;
 use schnorrkel::Keypair;
@@ -128,13 +131,20 @@ impl pallet_balances::Config for Test {
 
 parameter_types! {
     pub const EpochDuration: u64 = 3;
+    pub const EraDuration: u32 = 5;
+    pub const InitialSolutionRange: u64 = u64::MAX;
+    pub const SlotProbability: (u64, u64) = (3, 10);
     pub const ExpectedBlockTime: u64 = 1;
 }
 
 impl Config for Test {
     type EpochDuration = EpochDuration;
+    type EraDuration = EraDuration;
+    type InitialSolutionRange = InitialSolutionRange;
+    type SlotProbability = SlotProbability;
     type ExpectedBlockTime = ExpectedBlockTime;
     type EpochChangeTrigger = NormalEpochChange;
+    type EraChangeTrigger = NormalEraChange;
 
     // TODO: milestone 3
     // type HandleEquivocation =
