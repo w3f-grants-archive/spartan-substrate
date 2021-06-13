@@ -19,6 +19,7 @@ services:
       - source: spartan-farmer
         target: /var/spartan
         type: volume
+    restart: always
     command: [
         "farm",
         "--ws-server", "ws://node:9944"
