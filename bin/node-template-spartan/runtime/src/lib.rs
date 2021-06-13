@@ -134,10 +134,11 @@ const SLOT_DURATION: u64 = 1000;
 // pub const DAYS: BlockNumber = HOURS * 24;
 
 /// 1 in 6 slots (on average, not counting collisions) will have a block.
+/// Must match ratio between block and slot duration in constants above.
 const SLOT_PROBABILITY: (u64, u64) = (1, 6);
 
 /// Era duration in blocks.
-const ERA_DURATION_IN_BLOCKS: u32 = 2016;
+const ERA_DURATION_IN_BLOCKS: u32 = 32;
 
 // We assume initial plot size to be 1 GiB with piece size being 4096 bytes
 const INITIAL_SOLUTION_RANGE: u64 =
