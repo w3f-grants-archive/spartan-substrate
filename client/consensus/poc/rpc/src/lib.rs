@@ -51,6 +51,8 @@ pub struct RpcNewSlotInfo {
     pub slot_number: Slot,
     /// Slot challenge
     pub challenge: [u8; 8],
+    /// Salt
+    pub salt: [u8; 8],
     /// Acceptable solution range
     pub solution_range: u64,
 }
@@ -164,6 +166,7 @@ impl PoCRpcHandler {
                                         .send(RpcNewSlotInfo {
                                             slot_number: new_slot_info.slot.into(),
                                             challenge: new_slot_info.challenge,
+                                            salt: new_slot_info.salt,
                                             solution_range: new_slot_info.solution_range,
                                         })
                                         .await

@@ -17,7 +17,6 @@
 
 //! Verification for PoC headers.
 use super::{find_pre_digest, poc_err, BlockT, Epoch, Error};
-use crate::SALT;
 use log::{debug, trace};
 use ring::digest;
 use sc_consensus_slots::CheckedHeader;
@@ -25,7 +24,7 @@ use schnorrkel::context::SigningContext;
 use sp_consensus_poc::digests::{CompatibleDigestItem, PreDigest, Solution};
 use sp_consensus_poc::FarmerSignature;
 use sp_consensus_slots::Slot;
-use sp_consensus_spartan::spartan::{self, Piece, Spartan};
+use sp_consensus_spartan::spartan::{self, Piece, Salt, Spartan};
 use sp_core::Public;
 use sp_runtime::{traits::DigestItemFor, traits::Header};
 use std::convert::TryInto;
@@ -44,6 +43,8 @@ pub(super) struct VerificationParams<'a, B: 'a + BlockT> {
     pub(super) epoch: &'a Epoch,
     /// Solution range corresponding to this block.
     pub(super) solution_range: u64,
+    /// Salt corresponding to this block.
+    pub(super) salt: Salt,
     /// Spartan instance
     pub(super) spartan: &'a Spartan,
     /// Signing context for verifying signatures
@@ -70,6 +71,7 @@ where
         slot_now,
         epoch,
         solution_range,
+        salt,
         spartan,
         signing_context,
     } = params;
@@ -106,6 +108,7 @@ where
         &epoch,
         epoch.config.c,
         solution_range,
+        salt,
         &spartan,
         &signing_context,
     )?;
@@ -131,6 +134,7 @@ fn check_primary_header<B: BlockT + Sized>(
     epoch: &Epoch,
     _c: (u64, u64),
     solution_range: u64,
+    salt: Salt,
     spartan: &Spartan,
     signing_context: &SigningContext,
 ) -> Result<(), Error<B>> {
@@ -139,6 +143,7 @@ fn check_primary_header<B: BlockT + Sized>(
         epoch,
         solution_range,
         pre_digest.slot,
+        salt,
         spartan,
         signing_context,
     )?;
@@ -153,6 +158,7 @@ pub(crate) fn verify_solution<B: BlockT + Sized>(
     epoch: &Epoch,
     solution_range: u64,
     slot: Slot,
+    salt: Salt,
     spartan: &Spartan,
     signing_context: &SigningContext,
 ) -> Result<(), Error<B>> {
@@ -170,7 +176,7 @@ pub(crate) fn verify_solution<B: BlockT + Sized>(
         .try_into()
         .map_err(|_error| Error::EncodingOfWrongSize)?;
 
-    if !spartan::is_commitment_valid(&piece, &solution.tag, &SALT) {
+    if !spartan::is_commitment_valid(&piece, &solution.tag, &salt) {
         return Err(Error::InvalidCommitment(slot));
     }
 

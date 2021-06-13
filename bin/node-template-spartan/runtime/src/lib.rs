@@ -145,11 +145,10 @@ const INITIAL_SOLUTION_RANGE: u64 =
     u64::MAX / (1024 * 1024 * 1024 / 4096) * SLOT_PROBABILITY.0 / SLOT_PROBABILITY.1;
 
 const EPOCH_DURATION_IN_BLOCKS: BlockNumber = 32;
-const EPOCH_DURATION_IN_SLOTS: u64 = {
-    const SLOT_FILL_RATE: f64 = MILLISECS_PER_BLOCK as f64 / SLOT_DURATION as f64;
+const EPOCH_DURATION_IN_SLOTS: u64 =
+    EPOCH_DURATION_IN_BLOCKS as u64 * SLOT_PROBABILITY.1 / SLOT_PROBABILITY.0;
 
-    (EPOCH_DURATION_IN_BLOCKS as f64 * SLOT_FILL_RATE) as u64
-};
+const EON_DURATION_IN_SLOTS: u64 = 2u64.pow(14);
 
 /// The PoC epoch configuration at genesis.
 pub const POC_GENESIS_EPOCH_CONFIG: sp_consensus_poc::PoCEpochConfiguration =
@@ -235,6 +234,7 @@ impl frame_system::Config for Runtime {
 parameter_types! {
     pub const EpochDuration: u64 = EPOCH_DURATION_IN_SLOTS;
     pub const EraDuration: u32 = ERA_DURATION_IN_BLOCKS;
+    pub const EonDuration: u64 = EON_DURATION_IN_SLOTS;
     pub const InitialSolutionRange: u64 = INITIAL_SOLUTION_RANGE;
     pub const SlotProbability: (u64, u64) = SLOT_PROBABILITY;
     pub const ExpectedBlockTime: Moment = MILLISECS_PER_BLOCK;
@@ -243,11 +243,13 @@ parameter_types! {
 impl pallet_spartan::Config for Runtime {
     type EpochDuration = EpochDuration;
     type EraDuration = EraDuration;
+    type EonDuration = EonDuration;
     type InitialSolutionRange = InitialSolutionRange;
     type SlotProbability = SlotProbability;
     type ExpectedBlockTime = ExpectedBlockTime;
     type EpochChangeTrigger = pallet_spartan::NormalEpochChange;
     type EraChangeTrigger = pallet_spartan::NormalEraChange;
+    type EonChangeTrigger = pallet_spartan::NormalEonChange;
 
     // TODO: fix for milestone 3
     // type KeyOwnerProofSystem = Historical;
@@ -449,6 +451,10 @@ impl_runtime_apis! {
         fn solution_range() -> u64 {
             // TODO: Maybe this is not a correct value to have a default value
             PoC::solution_range().unwrap_or_else(InitialSolutionRange::get)
+        }
+
+        fn salt() -> u64 {
+            PoC::salt()
         }
 
         fn current_epoch_start() -> sp_consensus_poc::Slot {

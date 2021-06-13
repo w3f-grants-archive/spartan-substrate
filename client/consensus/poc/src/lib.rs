@@ -103,7 +103,7 @@ use sp_api::ApiExt;
 use sp_blockchain::{
     Error as ClientError, HeaderBackend, HeaderMetadata, ProvideCache, Result as ClientResult,
 };
-use sp_consensus_poc::digests::{NextSolutionRangeDescriptor, Solution};
+use sp_consensus_poc::digests::{NextSaltDescriptor, NextSolutionRangeDescriptor, Solution};
 use sp_consensus_poc::Randomness;
 use sp_consensus_slots::Slot;
 use sp_consensus_spartan::spartan::{Salt, Spartan, SIGNING_CONTEXT};
@@ -115,9 +115,6 @@ pub mod aux_schema;
 #[cfg(test)]
 mod tests;
 
-// TODO: Replace fixed salt with something
-const SALT: Salt = [1u8; 32];
-
 /// Information about new slot that just arrived
 #[derive(Debug, Clone)]
 pub struct NewSlotInfo {
@@ -125,6 +122,8 @@ pub struct NewSlotInfo {
     pub slot: Slot,
     /// Slot challenge
     pub challenge: [u8; 8],
+    /// Salt
+    pub salt: Salt,
     /// Acceptable solution range
     pub solution_range: u64,
 }
@@ -208,6 +207,9 @@ pub enum Error<B: BlockT> {
     /// Multiple PoC solution range digests
     #[display(fmt = "Multiple PoC solution range digests, rejecting!")]
     MultipleSolutionRangeDigests,
+    /// Multiple PoC salt digests
+    #[display(fmt = "Multiple PoC salt digests, rejecting!")]
+    MultipleSaltDigests,
     /// Could not extract timestamp and slot
     #[display(fmt = "Could not extract timestamp and slot: {:?}", _0)]
     Extraction(sp_consensus::Error),
@@ -266,6 +268,9 @@ pub enum Error<B: BlockT> {
     /// Block has no associated solution range
     #[display(fmt = "Missing solution range for block {}", _0)]
     MissingSolutionRange(B::Hash),
+    /// Block has no associated salt
+    #[display(fmt = "Missing salt for block {}", _0)]
+    MissingSalt(B::Hash),
     #[display(fmt = "Checking inherents failed: {}", _0)]
     /// Check Inherents error
     CheckInherents(String),
@@ -455,10 +460,11 @@ where
         on_claim_slot: Box::new({
             let new_slot_senders = Arc::clone(&new_slot_senders);
 
-            move |slot, epoch, solution_range, solution_sender: mpsc::Sender<Solution>| {
+            move |slot, epoch, salt, solution_range, solution_sender: mpsc::Sender<Solution>| {
                 let slot_info = NewSlotInfo {
                     slot,
                     challenge: create_global_challenge(epoch, slot),
+                    salt,
                     solution_range,
                 };
                 {
@@ -641,7 +647,8 @@ struct PoCSlotWorker<B: BlockT, C, E, I, SO, BS> {
     backoff_authoring_blocks: Option<BS>,
     epoch_changes: SharedEpochChanges<B, Epoch>,
     config: Config,
-    on_claim_slot: Box<dyn Fn(Slot, &Epoch, u64, mpsc::Sender<Solution>) + Send + Sync + 'static>,
+    on_claim_slot:
+        Box<dyn Fn(Slot, &Epoch, Salt, u64, mpsc::Sender<Solution>) + Send + Sync + 'static>,
     spartan: Spartan,
     signing_context: SigningContext,
     block_proposal_slot_portion: SlotProportion,
@@ -712,10 +719,21 @@ where
             .runtime_api()
             .solution_range(&BlockId::Hash(parent_header.hash()))
             .ok()?;
+        let salt = self
+            .client
+            .runtime_api()
+            .salt(&BlockId::Hash(parent_header.hash()))
+            .ok()?;
 
         let (solution_sender, solution_receiver) = mpsc::channel();
 
-        (self.on_claim_slot)(slot, epoch.as_ref(), solution_range, solution_sender);
+        (self.on_claim_slot)(
+            slot,
+            epoch.as_ref(),
+            salt.to_le_bytes(),
+            solution_range,
+            solution_sender,
+        );
 
         while let Ok(solution) = solution_receiver.recv() {
             match verification::verify_solution::<B>(
@@ -723,6 +741,7 @@ where
                 epoch.as_ref(),
                 solution_range,
                 slot,
+                salt.to_le_bytes(),
                 &self.spartan,
                 &self.signing_context,
             ) {
@@ -979,6 +998,29 @@ where
     Ok(solution_range_digest)
 }
 
+/// Extract the PoC salt change digest from the given header, if it exists.
+fn find_next_salt_digest<B: BlockT>(
+    header: &B::Header,
+) -> Result<Option<NextSaltDescriptor>, Error<B>>
+where
+    DigestItemFor<B>: CompatibleDigestItem,
+{
+    let mut salt_digest: Option<_> = None;
+    for log in header.digest().logs() {
+        trace!(target: "poc", "Checking log {:?}, looking for salt digest.", log);
+        let log = log.try_to::<ConsensusLog>(OpaqueDigestItemId::Consensus(&POC_ENGINE_ID));
+        match (log, salt_digest.is_some()) {
+            (Some(ConsensusLog::NextSaltData(_)), true) => {
+                return Err(poc_err(Error::MultipleSaltDigests))
+            }
+            (Some(ConsensusLog::NextSaltData(salt)), false) => salt_digest = Some(salt),
+            _ => trace!(target: "poc", "Ignoring digest not meant for us"),
+        }
+    }
+
+    Ok(salt_digest)
+}
+
 #[derive(Default, Clone)]
 struct TimeSource(Arc<Mutex<(Option<Duration>, Vec<(Instant, u64)>)>>);
 
@@ -1229,6 +1271,9 @@ where
         let solution_range = find_next_solution_range_digest::<Block>(&header)?
             .ok_or_else(|| Error::<Block>::MissingSolutionRange(hash))?
             .solution_range;
+        let salt = find_next_salt_digest::<Block>(&header)?
+            .ok_or_else(|| Error::<Block>::MissingSalt(hash))?
+            .salt;
 
         // We add one to the current slot to allow for some small drift.
         // FIXME #1019 in the future, alter this queue to allow deferring of headers
@@ -1238,6 +1283,7 @@ where
             slot_now: slot_now + 1,
             epoch: viable_epoch.as_ref(),
             solution_range,
+            salt: salt.to_le_bytes(),
             spartan: &self.spartan,
             signing_context: &self.signing_context,
         };

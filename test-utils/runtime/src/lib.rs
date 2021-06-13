@@ -532,6 +532,7 @@ impl pallet_timestamp::Config for Runtime {
 parameter_types! {
 	pub const EpochDuration: u64 = 6;
 	pub const EraDuration: u32 = 5;
+	pub const EonDuration: u64 = 11;
 	pub const InitialSolutionRange: u64 = u64::MAX;
 	pub const SlotProbability: (u64, u64) = (3, 10);
 	pub const ExpectedBlockTime: u64 = 10_000;
@@ -563,11 +564,13 @@ impl pallet_babe::Config for Runtime {
 impl pallet_spartan::Config for Runtime {
 	type EpochDuration = EpochDuration;
 	type EraDuration = EraDuration;
+	type EonDuration = EonDuration;
 	type InitialSolutionRange = InitialSolutionRange;
 	type SlotProbability = SlotProbability;
 	type ExpectedBlockTime = ExpectedBlockTime;
 	type EpochChangeTrigger = pallet_spartan::NormalEpochChange;
 	type EraChangeTrigger = pallet_spartan::NormalEraChange;
+	type EonChangeTrigger = pallet_spartan::NormalEonChange;
 
 	type WeightInfo = ();
 }
@@ -848,6 +851,10 @@ cfg_if! {
 				fn solution_range() -> u64 {
 					<pallet_spartan::Pallet<Runtime>>::solution_range()
 						.unwrap_or_else(InitialSolutionRange::get)
+				}
+
+				fn salt() -> u64 {
+					<pallet_spartan::Pallet<Runtime>>::salt()
 				}
 
 				fn current_epoch_start() -> Slot {
@@ -1137,6 +1144,10 @@ cfg_if! {
 				fn solution_range() -> u64 {
 					<pallet_spartan::Pallet<Runtime>>::solution_range()
 						.unwrap_or_else(InitialSolutionRange::get)
+				}
+
+				fn salt() -> u64 {
+					<pallet_spartan::Pallet<Runtime>>::salt()
 				}
 
 				fn current_epoch_start() -> Slot {

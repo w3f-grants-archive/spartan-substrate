@@ -107,6 +107,13 @@ pub struct NextSolutionRangeDescriptor {
     pub solution_range: u64,
 }
 
+/// Salt, if changed. This is broadcast in the each block of the eon.
+#[derive(Decode, Encode, PartialEq, Eq, Clone, RuntimeDebug)]
+pub struct NextSaltDescriptor {
+    /// Salt used with challenges.
+    pub salt: u64,
+}
+
 /// A digest item which is usable with PoC consensus.
 pub trait CompatibleDigestItem: Sized {
     /// Construct a digest item which contains a PoC pre-digest.

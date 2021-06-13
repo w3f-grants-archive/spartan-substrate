@@ -29,7 +29,7 @@ pub const SIGNING_CONTEXT: &[u8] = b"FARMER";
 
 pub type Piece = [u8; PIECE_SIZE];
 pub type Tag = [u8; PRIME_SIZE_BYTES];
-pub type Salt = [u8; 32];
+pub type Salt = [u8; 8];
 
 pub struct Spartan {
     instance: spartan_codec::Spartan<PRIME_SIZE_BYTES, PIECE_SIZE>,

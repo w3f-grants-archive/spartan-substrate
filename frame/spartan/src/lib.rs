@@ -53,6 +53,7 @@ mod tests;
 // pub use equivocation::{PoCEquivocationOffence, EquivocationHandler, HandleEquivocation};
 
 pub use pallet::*;
+use sp_consensus_poc::digests::NextSaltDescriptor;
 
 pub trait WeightInfo {
     fn plan_config_change() -> Weight;
@@ -95,6 +96,24 @@ impl EraChangeTrigger for NormalEraChange {
     }
 }
 
+/// Trigger an era change, if any should take place.
+pub trait EonChangeTrigger {
+    /// Trigger an era change, if any should take place. This should be called
+    /// during every block, after initialization is done.
+    fn trigger<T: Config>(now: T::BlockNumber);
+}
+
+/// A type signifying to Spartan that it should perform era changes with an internal trigger.
+pub struct NormalEonChange;
+
+impl EonChangeTrigger for NormalEonChange {
+    fn trigger<T: Config>(now: T::BlockNumber) {
+        if <Pallet<T>>::should_eon_change(now) {
+            <Pallet<T>>::enact_eon_change();
+        }
+    }
+}
+
 const UNDER_CONSTRUCTION_SEGMENT_LENGTH: usize = 256;
 
 type MaybeRandomness = Option<sp_consensus_poc::Randomness>;
@@ -124,6 +143,12 @@ pub mod pallet {
         /// the chain has started. Attempting to do so will brick block production.
         #[pallet::constant]
         type EraDuration: Get<u32>;
+
+        /// The amount of time, in slots, that each eon should last.
+        /// NOTE: Currently it is not possible to change the eon duration after
+        /// the chain has started. Attempting to do so will brick block production.
+        #[pallet::constant]
+        type EonDuration: Get<u64>;
 
         /// Initial solution range used for challenges during the very first era.
         #[pallet::constant]
@@ -156,6 +181,10 @@ pub mod pallet {
         /// has ended and to perform the transition to the next era.
         type EraChangeTrigger: EraChangeTrigger;
 
+        /// Spartan requires some logic to be triggered on every block to query for whether an eon
+        /// has ended and to perform the transition to the next eon.
+        type EonChangeTrigger: EonChangeTrigger;
+
         // TODO: Bring this back for milestone 3
         // /// The equivocation handling subsystem, defines methods to report an
         // /// offence (after the equivocation has been validated) and for submitting a
@@ -182,6 +211,11 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn epoch_index)]
     pub type EpochIndex<T> = StorageValue<_, u64, ValueQuery>;
+
+    /// Current eon index.
+    #[pallet::storage]
+    #[pallet::getter(fn eon_index)]
+    pub type EonIndex<T> = StorageValue<_, u64, ValueQuery>;
 
     /// The slot at which the first epoch actually started. This is 0
     /// until the first block of the chain.
@@ -215,6 +249,11 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn solution_range)]
     pub type SolutionRange<T> = StorageValue<_, u64>;
+
+    /// Salt for *current* eon.
+    #[pallet::storage]
+    #[pallet::getter(fn salt)]
+    pub type Salt<T> = StorageValue<_, u64, ValueQuery>;
 
     /// The solution range for *current* era.
     #[pallet::storage]
@@ -427,9 +466,21 @@ impl<T: Config> Pallet<T> {
     /// Assumes that initialization has already taken place.
     pub fn should_era_change(now: T::BlockNumber) -> bool {
         // The era has technically ended during the passage of time
-        // between this block and the last, but we have to "end" the epoch now,
+        // between this block and the last, but we have to "end" the era now,
         // since there is no earlier possible block we could have done it.
         now != One::one() && now % T::EraDuration::get().into() == 1_u32.into()
+    }
+
+    /// Determine whether an eon change should take place at this block.
+    /// Assumes that initialization has already taken place.
+    pub fn should_eon_change(now: T::BlockNumber) -> bool {
+        // The eon has technically ended during the passage of time
+        // between this block and the last, but we have to "end" the eon now,
+        // since there is no earlier possible block we could have done it.
+        now != One::one() && {
+            let diff = CurrentSlot::<T>::get().saturating_sub(Self::current_eon_start());
+            *diff >= T::EonDuration::get()
+        }
     }
 
     /// Return the _best guess_ block number, at which the next epoch change is predicted to happen.
@@ -544,11 +595,38 @@ impl<T: Config> Pallet<T> {
         EraStartSlot::<T>::put(current_slot);
     }
 
+    /// DANGEROUS: Enact an eon change. Should be done on every block where `should_eon_change` has returned `true`,
+    /// and the caller is the only caller of this function.
+    ///
+    /// Typically, this is not handled directly by the user, but by higher-level validator-set manager logic like
+    /// `pallet-session`.
+    pub fn enact_eon_change() {
+        // PRECONDITION: caller has done initialization and is guaranteed
+        // by the session module to be called before this.
+        debug_assert!(Self::initialized().is_some());
+
+        // Update eon index
+        let eon_index = EonIndex::<T>::get()
+            .checked_add(1)
+            .expect("eon indices will never reach 2^64 before the death of the universe; qed");
+
+        EonIndex::<T>::put(eon_index);
+
+        Salt::<T>::put(eon_index);
+    }
+
     /// Finds the start slot of the current epoch. only guaranteed to
     /// give correct results after `do_initialize` of the first block
     /// in the chain (as its result is based off of `GenesisSlot`).
     pub fn current_epoch_start() -> Slot {
         Self::epoch_start(EpochIndex::<T>::get())
+    }
+
+    /// Finds the start slot of the current eon. only guaranteed to
+    /// give correct results after `do_initialize` of the first block
+    /// in the chain (as its result is based off of `GenesisSlot`).
+    pub fn current_eon_start() -> Slot {
+        Self::eon_start(EonIndex::<T>::get())
     }
 
     /// Produces information about the current epoch.
@@ -595,6 +673,20 @@ impl<T: Config> Pallet<T> {
             .expect(PROOF);
 
         epoch_start
+            .checked_add(*GenesisSlot::<T>::get())
+            .expect(PROOF)
+            .into()
+    }
+
+    fn eon_start(eon_index: u64) -> Slot {
+        // (eon_index * eon_duration) + genesis_slot
+
+        const PROOF: &str = "slot number is u64; it should relate in some way to wall clock time; \
+							 if u64 is not enough we should crash for safety; qed.";
+
+        let eon_start = eon_index.checked_mul(T::EpochDuration::get()).expect(PROOF);
+
+        eon_start
             .checked_add(*GenesisSlot::<T>::get())
             .expect(PROOF)
             .into()
@@ -677,12 +769,19 @@ impl<T: Config> Pallet<T> {
         T::EpochChangeTrigger::trigger::<T>(now);
         // enact era change, if necessary.
         T::EraChangeTrigger::trigger::<T>(now);
+        // enact eon change, if necessary.
+        T::EonChangeTrigger::trigger::<T>(now);
 
         // Deposit solution range data such that light client can validate blocks later.
         let next_solution_range = NextSolutionRangeDescriptor {
             solution_range: SolutionRange::<T>::get().unwrap_or_else(T::InitialSolutionRange::get),
         };
         Self::deposit_consensus(ConsensusLog::NextSolutionRangeData(next_solution_range));
+        // Deposit salt data such that light client can validate blocks later.
+        let next_salt = NextSaltDescriptor {
+            salt: Salt::<T>::get(),
+        };
+        Self::deposit_consensus(ConsensusLog::NextSaltData(next_salt));
     }
 
     /// Call this function exactly once when an epoch changes, to update the
