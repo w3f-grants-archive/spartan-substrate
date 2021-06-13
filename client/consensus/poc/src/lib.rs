@@ -458,7 +458,7 @@ where
             move |slot, epoch, solution_range, solution_sender: mpsc::Sender<Solution>| {
                 let slot_info = NewSlotInfo {
                     slot,
-                    challenge: create_challenge(epoch, slot),
+                    challenge: create_global_challenge(epoch, slot),
                     solution_range,
                 };
                 {
@@ -1777,7 +1777,7 @@ where
     ))
 }
 
-pub(crate) fn create_challenge(epoch: &Epoch, slot: Slot) -> [u8; 8] {
+pub(crate) fn create_global_challenge(epoch: &Epoch, slot: Slot) -> [u8; 8] {
     digest::digest(&digest::SHA256, &{
         let mut data = Vec::with_capacity(epoch.randomness.len() + std::mem::size_of::<Slot>());
         data.extend_from_slice(&epoch.randomness);

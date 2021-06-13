@@ -19,6 +19,7 @@
 use super::{find_pre_digest, poc_err, BlockT, Epoch, Error};
 use crate::SALT;
 use log::{debug, trace};
+use ring::digest;
 use sc_consensus_slots::CheckedHeader;
 use schnorrkel::context::SigningContext;
 use sp_consensus_poc::digests::{CompatibleDigestItem, PreDigest, Solution};
@@ -157,7 +158,7 @@ pub(crate) fn verify_solution<B: BlockT + Sized>(
 ) -> Result<(), Error<B>> {
     if !is_within_solution_range(
         &solution,
-        crate::create_challenge(epoch, slot),
+        crate::create_global_challenge(epoch, slot),
         solution_range,
     ) {
         return Err(Error::OutsideOfSolutionRange(slot));
@@ -184,8 +185,15 @@ pub(crate) fn verify_solution<B: BlockT + Sized>(
     Ok(())
 }
 
-fn is_within_solution_range(solution: &Solution, challenge: [u8; 8], solution_range: u64) -> bool {
-    let target = u64::from_be_bytes(challenge);
+fn is_within_solution_range(
+    solution: &Solution,
+    global_challenge: [u8; 8],
+    solution_range: u64,
+) -> bool {
+    let farmer_id = hash_public_key(solution.public_key.as_ref());
+    let local_challenge = derive_local_challenge(&global_challenge, &farmer_id);
+
+    let target = u64::from_be_bytes(local_challenge);
     let tag = u64::from_be_bytes(solution.tag);
 
     let (lower, is_lower_overflowed) = target.overflowing_sub(solution_range / 2);
@@ -213,4 +221,23 @@ fn is_signature_valid(signing_context: &SigningContext, solution: &Solution) -> 
     public_key
         .verify(signing_context.bytes(&solution.tag), &signature)
         .is_ok()
+}
+
+pub(crate) fn derive_local_challenge(global_challenge: &[u8], farmer_id: &[u8]) -> [u8; 8] {
+    digest::digest(&digest::SHA256, &{
+        let mut data = Vec::with_capacity(global_challenge.len() + farmer_id.len());
+        data.extend_from_slice(global_challenge);
+        data.extend_from_slice(farmer_id);
+        data
+    })
+    .as_ref()[..8]
+        .try_into()
+        .unwrap()
+}
+
+pub(crate) fn hash_public_key(public_key: &[u8]) -> [u8; 8] {
+    let mut array = [0u8; 8];
+    let hash = digest::digest(&digest::SHA256, public_key);
+    array.copy_from_slice(&hash.as_ref()[..8]);
+    array
 }
