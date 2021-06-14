@@ -80,6 +80,7 @@ Initially set to 32 blocks.
 A security parameter which defines the length of an era in slots.
 Each era shares the same `solution_range`. At the conclusion of each era, a new `solution_range` is calculated, based on the number of blocks observed over the last era. This is roughly equivalent to the work-difficulty reset period in PoW blockchains.
 
+
 ##### Solution Range 
 A security parameter which defines the expected number of slots required for the network to obtain a valid PoR and generate a new block, for a given `SolutonRange`.
 Higher probabilities increase the likelihood of honest forking and reduce the cost of private attacks. To ensure that we maintain an average of six seconds (six timeslots) between blocks we must ensure that the protocol automatically adjusts the solution range based on the observed rate of block production, which will change as the disk space pledged to the network grows and shrinks over time. To accomplish this we further group timeslots into eras of 6 x 2016 = 12,096 slots or roughly 3.4 hours. This mimics the work difficulty resets of Bitcoin which take place every 2016 blocks. Each era we count the number of blocks produced and then compute an adjustment factor based on the target of 2016 blocks. If the adjustment factor is less than one, it means the space pledged has decreased and blocks are too far apart, requiring the solution range to be increased. If the adjustment factor is greater than one, it means the space pledged has increased and blocks are too close together, requiring the solution range to be decreased.
@@ -89,7 +90,7 @@ A security parameter which defines the number of breadth-first iterations for th
 A higher round count increases security but at the cost of farmer plotting experience and energy-efficiency.
 
 ##### Salt Update Interval
-A security parameter which defines the number of slots for which a given salt is valid.
+A security parameter which defines the number of blocks for which a given salt is valid.
 This is required to discourage compression attacks.
 A more frequent update interval linearly increases the computation required to preform the compression attack but also degrades the efficiency of the protocol, as the entire plot must be read and re-committed to at each update.
 

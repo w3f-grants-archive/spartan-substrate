@@ -19,7 +19,6 @@
 
 use futures::channel::mpsc::UnboundedSender;
 use futures::future;
-use futures::future::Either;
 use futures::{FutureExt as _, SinkExt, StreamExt, TryFutureExt as _, TryStreamExt};
 use jsonrpc_core::{
     futures::future as rpc_future,
@@ -136,7 +135,7 @@ impl PoCRpcHandler {
                 let solution_senders = Arc::clone(&solution_senders);
                 let new_slot_notifier: std::sync::mpsc::Receiver<(
                     NewSlotInfo,
-                    mpsc::SyncSender<Option<Solution>>,
+                    mpsc::Sender<Solution>,
                 )> = new_slot_notifier();
 
                 move || {
@@ -158,7 +157,6 @@ impl PoCRpcHandler {
                                 let mut notification_senders = notification_senders.lock();
                                 expected_solutions_count = notification_senders.len();
                                 if expected_solutions_count == 0 {
-                                    let _ = sync_solution_sender.send(None);
                                     return;
                                 }
                                 for notification_sender in notification_senders.iter_mut() {
@@ -176,38 +174,36 @@ impl PoCRpcHandler {
                                 }
                             }
 
-                            let timeout = futures_timer::Delay::new(SOLUTION_TIMEOUT).map(|_| None);
-                            let solution = async move {
+                            let timeout = futures_timer::Delay::new(SOLUTION_TIMEOUT);
+                            let solution = async {
                                 // TODO: This doesn't track what client sent a solution, allowing
                                 //  some clients to send multiple
                                 let mut potential_solutions_left = expected_solutions_count;
                                 while let Some(solution) = solution_receiver.next().await {
                                     if let Some(solution) = solution {
-                                        return Some(Solution {
-                                            public_key: FarmerId::from_slice(&solution.public_key),
-                                            nonce: solution.nonce,
-                                            encoding: solution.encoding,
-                                            signature: solution.signature,
-                                            tag: solution.tag,
-                                        });
+                                        let solution_send_result =
+                                            sync_solution_sender.send(Solution {
+                                                public_key: FarmerId::from_slice(
+                                                    &solution.public_key,
+                                                ),
+                                                nonce: solution.nonce,
+                                                encoding: solution.encoding,
+                                                signature: solution.signature,
+                                                tag: solution.tag,
+                                            });
+                                        if let Err(error) = solution_send_result {
+                                            debug!("Failed to send solution: {}", error);
+                                            break;
+                                        }
                                     }
                                     potential_solutions_left -= 1;
                                     if potential_solutions_left == 0 {
                                         break;
                                     }
                                 }
-
-                                return None;
                             };
 
-                            let solution = match future::select(timeout, Box::pin(solution)).await {
-                                Either::Left((value1, _)) => value1,
-                                Either::Right((value2, _)) => value2,
-                            };
-
-                            if let Err(error) = sync_solution_sender.send(solution) {
-                                debug!("Failed to send solution: {}", error);
-                            }
+                            future::select(timeout, Box::pin(solution)).await;
 
                             solution_senders.lock().remove(&new_slot_info.slot.into());
                         });

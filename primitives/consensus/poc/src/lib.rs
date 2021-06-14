@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use sp_keystore::vrf::{VRFTranscriptData, VRFTranscriptValue};
 use sp_runtime::{/*traits::Header, */ ConsensusEngineId, RuntimeDebug};
 
-use crate::digests::{NextConfigDescriptor, NextEpochDescriptor};
+use crate::digests::{NextConfigDescriptor, NextEpochDescriptor, NextSolutionRangeDescriptor};
 
 /// Key type for PoC module.
 pub const KEY_TYPE: sp_core::crypto::KeyTypeId = sp_application_crypto::key_types::POC;
@@ -94,6 +94,9 @@ pub enum ConsensusLog {
     /// enact different epoch configurations.
     #[codec(index = 2)]
     NextConfigData(NextConfigDescriptor),
+    /// The era has changed, and the solution range has changed.
+    #[codec(index = 3)]
+    NextSolutionRangeData(NextSolutionRangeDescriptor),
 }
 
 /// Configuration data used by the PoC consensus engine.
@@ -251,6 +254,9 @@ sp_api::decl_runtime_apis! {
     pub trait PoCApi {
         /// Return the genesis configuration for PoC. The configuration is only read on genesis.
         fn configuration() -> PoCGenesisConfiguration;
+
+        /// Current solution range.
+        fn solution_range() -> u64;
 
         /// Returns the slot that started the current epoch.
         fn current_epoch_start() -> Slot;

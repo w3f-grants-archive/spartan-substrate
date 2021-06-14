@@ -28,7 +28,7 @@ Based on a fork of Substrate Node Template.
 
 Follow these steps to get started with the Spartan Node Template :hammer_and_wrench:
 
-Note that this repo is for running a spartan-client. In order to run a full node which participates in consensus and produces blocks you must also run a [spartan-farmer](https://github.com/subspace/spartan-farmer/tree/w3f-spartan-ms-1.1) and that farmer must have first created a disk-based plot. For clarity we provide instructions for both repos in the docker guide below. For building and running the farmer in development mode from source, refer to the instructions in the [readme](https://github.com/subspace/spartan-farmer/tree/w3f-spartan-ms-1.1#install-and-run-manually). 
+Note that this repo is for running a spartan-client. In order to run a full node which participates in consensus and produces blocks you must also run a [spartan-farmer](https://github.com/subspace/spartan-farmer/tree/w3f-spartan-ms-1.1) and that farmer must have first created a disk-based plot. For clarity we provide instructions for both repos in the docker guide below. For building and running the farmer in development mode from source, refer to the instructions in the [readme](https://github.com/subspace/spartan-farmer/tree/w3f-spartan-ms-1.1#install-and-run-manually).
 
 ### Run with Docker
 
@@ -38,9 +38,10 @@ First, install [Docker](https://docs.docker.com/get-docker/).
 
 #### Initialize Farmer (Terminal 1)
 
-Create volume for plot and initialize 1 GiB plot (should take a thirty seconds to a few minutes):
+Create volume for plot, pull latest image and initialize 1 GiB plot (should take a thirty seconds to a few minutes):
 ```bash
 docker volume create spartan-farmer
+docker pull subspacelabs/spartan-farmer
 docker run --rm -it \
   --name spartan-farmer \
   --mount source=spartan-farmer,target=/var/spartan \
@@ -49,11 +50,21 @@ docker run --rm -it \
 
 #### Run the Client (Terminal 2)
 
-Start a single node development chain:
+Create virtual network, pull latest image and start a single node development chain:
 ```bash
+docker network create spartan
+docker pull subspacelabs/node-template-spartan
 docker run --rm --init -it \
+  --net spartan \
   --name node-template-spartan \
-  subspacelabs/node-template-spartan --dev --tmp
+  --publish 127.0.0.1:30333:30333 \
+  --publish 127.0.0.1:9944:9944 \
+  --publish 127.0.0.1:9933:9933 \
+  subspacelabs/node-template-spartan \
+    --dev \
+    --tmp \
+    --ws-external \
+    --node-key 0000000000000000000000000000000000000000000000000000000000000001
 ```
 
 #### Run the Farmer (Terminal 1)
@@ -61,22 +72,68 @@ docker run --rm --init -it \
 Once node is running, you can connect farmer to it by running following in a separate terminal:
 ```bash
 docker run --rm --init -it \
+  --net spartan \
   --name spartan-farmer \
   --mount source=spartan-farmer,target=/var/spartan \
-  --net container:node-template-spartan \
-  subspacelabs/spartan-farmer farm
+  subspacelabs/spartan-farmer \
+    farm \
+    --ws-server ws://node-template-spartan:9944
 ```
 
 Now you should see block production in the first terminal where node is running.
 
 #### Stopping the Client
 
-The client container will not respond to kill commands in the same terminal. Instead run this command in a seperate terminal.
+The client container may not respond to kill commands in the same terminal.
+If it happens, run this command in a separate terminal.
 
 ```
 docker kill node-template-spartan
-
 ```
+
+#### Running Full Client
+
+We can now run another full client and sync the chain from the client we started earlier:
+```
+BOOTSTRAP_CLIENT_IP=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
+docker run --rm --init -it \
+  --net spartan \
+  --name node-template-spartan-full \
+  subspacelabs/node-template-spartan \
+    --dev \
+    --tmp \
+    --ws-external \
+    --bootnodes /ip4/$BOOTSTRAP_CLIENT_IP/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
+```
+
+#### Running Light Client
+
+We can also run light client and sync the chain from the client we started earlier:
+```
+BOOTSTRAP_CLIENT_IP=$(docker inspect -f "{{.NetworkSettings.Networks.spartan.IPAddress}}" node-template-spartan)
+docker run --rm --init -it \
+  --net spartan \
+  --name node-template-spartan-light \
+  subspacelabs/node-template-spartan \
+    --dev \
+    --tmp \
+    --light \
+    --ws-external \
+    --bootnodes /ip4/$BOOTSTRAP_CLIENT_IP/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp
+```
+
+#### Run more nodes on the test network
+
+If above setup is not enough, you can use `run-node-farmer-pair.sh` script to run more full nodes on the network, each with own farmer.
+
+Usage is simple:
+```
+./run-node-farmer-pair.sh test
+```
+
+Where `test` is the name of the pair. You can create as many pairs as needed, they will all join the same test network.
+
+Use `Ctrl+C` to stop the pair, everything will be stopped and cleaned up automatically.
 
 ### Run In Development Mode
 

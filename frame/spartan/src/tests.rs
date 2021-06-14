@@ -63,7 +63,7 @@ fn first_block_epoch_zero_start() {
         assert_eq!(Spartan::author_por_randomness(), None);
         assert_eq!(NextRandomness::<Test>::get(), [0; 32]);
 
-        assert_eq!(header.digest.logs.len(), 2);
+        assert_eq!(header.digest.logs.len(), 3);
         assert_eq!(pre_digest.logs.len(), 1);
         assert_eq!(header.digest.logs[0], pre_digest.logs[0]);
 
@@ -122,6 +122,40 @@ fn can_predict_next_epoch_change() {
             Spartan::next_expected_epoch_change(System::block_number()),
             Some(5 + 2)
         );
+    })
+}
+
+#[test]
+fn can_update_solution_range_on_era_change() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(<Test as Config>::EraDuration::get(), 4);
+        assert_eq!(
+            <Test as Config>::InitialSolutionRange::get(),
+            INITIAL_SOLUTION_RANGE
+        );
+        // There should be no solution range stored during first era
+        assert_eq!(Spartan::solution_range(), None);
+
+        // We produce blocks on every slot
+        progress_to_block(5);
+
+        // Second era should have solution range updated
+        assert_matches!(Spartan::solution_range(), Some(_));
+
+        // Because blocks were produced on every slot, apparent pledged space must increase and
+        // solution range should decrease
+        let last_solution_range = Spartan::solution_range().unwrap();
+        assert!(last_solution_range < INITIAL_SOLUTION_RANGE);
+
+        // Progress almost to era change
+        progress_to_block(8);
+        // Change era such that it takes more slots than expected
+        go_to_block(
+            9,
+            u64::from(Spartan::current_slot()) + (4 * SLOT_PROBABILITY.1 / SLOT_PROBABILITY.0 + 10),
+        );
+        // This should cause solution range to increase as apparent pledged space decreased
+        assert!(Spartan::solution_range().unwrap() > last_solution_range);
     })
 }
 
