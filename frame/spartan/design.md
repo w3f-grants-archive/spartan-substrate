@@ -12,7 +12,7 @@ Similar to proof-of-stake protocols, there is no mining delay, so we instead emp
 Spartan is not intended to be deployed in a production setting, as it is not actually incentive compatible for a decentralized network.
 This is due to several subtle mechanism design challenges inherent to PoC consensus, which we refer to as the farmer's dilemma.
 Instead, Spartan is intended to be an extensible stepping stone towards Subspace, a PoC consensus design which does resolve the farmer's dilemma.
-For more details, please refer to our technical whitepaper: [Subspace: A solution to the farmer's dilemma]().
+For more details, please refer to our technical whitepaper: [Subspace: A solution to the farmer's dilemma](https://drive.google.com/file/d/1v847u_XeVf0SBz7Y7LEMXi72QfqirstL/view).
 
 #### A note on terminology
 
@@ -51,7 +51,7 @@ Required to derive a valid commitment or `tag` for each `encoding` and a dynamic
 Required to generate and verify each `encoding`, derived from the `public_key_hash`, `nonce`, and `GENESIS_PIECE` for some number of `ENCODE_ROUNDS`.
 We employ a time-asymmetric permutation based on Sloth (Slow timed hash function), parameterized by a `PRIME_SIZE` and `PIECE_SIZE`.
 This has the advantage of allowing decoding (and verification) to be completed much faster than encoding.
-Concretely, the `public_key_hash` serves as a public encoding key, the `nonce` serves as an Initialization Vector, and the `ENCODE_ROUNDS` specifies the number of depth-first iterations, or layers of the CBC block cipher (parameterizing the encoding delay).
+Concretely, the `public_key_hash` serves as a public encoding key, the `nonce` serves as an Initialization Vector, and the `ENCODE_ROUNDS` specifies the number of breadth-first iterations, or layers of the CBC block cipher (parameterizing the encoding delay).
 
 ##### Genesis Piece
 A string of random bits of length `PIECE_SIZE` which is deterministically derived from a short seed.
@@ -78,16 +78,15 @@ Initially set to 32 blocks.
 
 ##### Era Duration
 A security parameter which defines the length of an era in slots.
-Each era shares the same `solution_range`. At the conclusion of each era, a new `solution_range` is calculated, based on the average `solution_range` over the last era.
-Roughly equivalent to the work-difficulty reset period in PoW blockchains.
+Each era shares the same `solution_range`. At the conclusion of each era, a new `solution_range` is calculated, based on the number of blocks observed over the last era. This is roughly equivalent to the work-difficulty reset period in PoW blockchains.
 
-##### Solution Range
+##### Solution Range 
 A security parameter which defines the expected number of slots required for the network to obtain a valid PoR and generate a new block, for a given `SolutonRange`.
-Higher probabilities increase the likelihood of honest forking and reduce the cost of private attacks.
+Higher probabilities increase the likelihood of honest forking and reduce the cost of private attacks. To ensure that we maintain an average of six seconds (six timeslots) between blocks we must ensure that the protocol automatically adjusts the solution range based on the observed rate of block production, which will change as the disk space pledged to the network grows and shrinks over time. To accomplish this we further group timeslots into eras of 6 x 2016 = 12,096 slots or roughly 3.4 hours. This mimics the work difficulty resets of Bitcoin which take place every 2016 blocks. Each era we count the number of blocks produced and then compute an adjustment factor based on the target of 2016 blocks. If the adjustment factor is less than one, it means the space pledged has decreased and blocks are too far apart, requiring the solution range to be increased. If the adjustment factor is greater than one, it means the space pledged has increased and blocks are too close together, requiring the solution range to be decreased.
 
 ##### Encoding Rounds
-A security parameter which defines the number of depth-first iterations for the PRP, proportional to the sequential time required to encode any single piece, and the parallel time required for plotting.
-A higher round count increases security but at the cost of farmer experience and energy-efficiency.
+A security parameter which defines the number of breadth-first iterations for the PRP, proportional to the sequential time required to encode any single piece, and the parallel time required for plotting.
+A higher round count increases security but at the cost of farmer plotting experience and energy-efficiency.
 
 ##### Salt Update Interval
 A security parameter which defines the number of slots for which a given salt is valid.
