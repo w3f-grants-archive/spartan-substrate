@@ -124,6 +124,8 @@ pub struct NewSlotInfo {
     pub challenge: [u8; 8],
     /// Salt
     pub salt: Salt,
+    /// Salt for the next eon
+    pub next_salt: Option<Salt>,
     /// Acceptable solution range
     pub solution_range: u64,
 }
@@ -465,6 +467,9 @@ where
                     slot,
                     challenge: create_global_challenge(epoch, slot),
                     salt,
+                    // TODO: This will not be the correct way in the future once salt is no longer
+                    //  just an incremented number
+                    next_salt: Some((u64::from_le_bytes(salt) + 1).to_le_bytes()),
                     solution_range,
                 };
                 {

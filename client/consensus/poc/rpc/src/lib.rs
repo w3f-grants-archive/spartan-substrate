@@ -53,6 +53,8 @@ pub struct RpcNewSlotInfo {
     pub challenge: [u8; 8],
     /// Salt
     pub salt: [u8; 8],
+    /// Salt for the next eon
+    pub next_salt: Option<[u8; 8]>,
     /// Acceptable solution range
     pub solution_range: u64,
 }
@@ -167,6 +169,7 @@ impl PoCRpcHandler {
                                             slot_number: new_slot_info.slot.into(),
                                             challenge: new_slot_info.challenge,
                                             salt: new_slot_info.salt,
+                                            next_salt: new_slot_info.next_salt,
                                             solution_range: new_slot_info.solution_range,
                                         })
                                         .await
